@@ -55,6 +55,7 @@ if [[ "${USE_PRUNE}" == "true" ]]; then
     PRUNE_GB=100
   fi
   PRUNE_MIB="$(( PRUNE_GB * 1024 ))"
+
   # enforce Bitcoin Core minimum (>= 550 MiB)
   if (( PRUNE_MIB < 550 )); then
     warn "Prune size too small; bumping to 550 MiB minimum."
