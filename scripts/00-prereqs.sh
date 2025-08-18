@@ -9,7 +9,7 @@ if has_state prereqs.done; then ok "Prerequisites already installed"; exit 0; fi
 
 log "Updating base packages"
 pkg_update
-pkg_install curl jq git ufw unzip tar bc wget ca-certificates gnupg lsb-release python3 iptables
+pkg_install curl jq git ufw unzip tar bc wget ca-certificates gnupg lsb-release python3 iptables expect
 
 # -----------------------------------------------------------------------------
 # Service users and base dirs
