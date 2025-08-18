@@ -56,11 +56,31 @@ chmod 0644 /etc/profile.d/btc-aliases.sh
 # -----------------------------------------------------------------------------
 if confirm "Install Tor for privacy (recommended)?"; then
   pkg_install tor
-  systemctl enable --now tor || true
-  set_state tor.enabled
-  ok "Tor installed"
-fi
 
+  # Ensure ControlPort for apps (Bitcoin/LND/Electrs/ThunderHub) + group perms
+  if ! grep -q '^ControlPort 9051' /etc/tor/torrc; then
+    cat >> /etc/tor/torrc <<'TOR'
+# --- Added by btc-node-installer ---
+# ControlPort for local apps to manage/create onion services
+ControlPort 9051
+CookieAuthentication 1
+CookieAuthFileGroupReadable 1
+
+# SOCKS5 proxy (9050 is default; keep explicit for clarity)
+SocksPort 9050
+TOR
+  fi
+
+  # Allow service users to read Tor cookie
+  id -u bitcoin >/dev/null 2>&1 && usermod -aG debian-tor bitcoin || true
+  id -u lnd >/dev/null 2>&1 && usermod -aG debian-tor lnd || true
+
+  systemctl enable --now tor || true
+  systemctl restart tor || true
+
+  set_state tor.enabled
+  ok "Tor installed & ControlPort 9051 configured"
+fi
 # -----------------------------------------------------------------------------
 # UFW (firewall)
 # -----------------------------------------------------------------------------

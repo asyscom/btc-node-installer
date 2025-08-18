@@ -133,26 +133,24 @@ esac
 # Tor/I2P only if enabled previously
 if has_state tor.enabled; then
   cat >> /etc/bitcoin/bitcoin.conf <<'CONF'
-# Tor/I2P (enabled)
+# Tor networking
 bind=127.0.0.1
 proxy=127.0.0.1:9050
 onion=127.0.0.1:9050
 listenonion=1
-# onlynet=onion    # uncomment if you want Tor-only
+torcontrol=127.0.0.1:9051
+# onlynet=onion    # uncomment to force Tor-only
 CONF
   if has_state i2p.enabled; then
-    {
-      echo "i2psam=127.0.0.1:7656"
-      # echo "onlynet=i2p"  # uncomment if you want I2P-only as well
-    } >> /etc/bitcoin/bitcoin.conf
+    echo "i2psam=127.0.0.1:7656" >> /etc/bitcoin/bitcoin.conf
   fi
 else
   cat >> /etc/bitcoin/bitcoin.conf <<'CONF'
-# Tor/I2P (disabled here). You can enable them later via the security module.
-# bind=127.0.0.1
+# Tor/I2P disabled here. You can enable them later via the security module.
 # proxy=127.0.0.1:9050
 # onion=127.0.0.1:9050
 # listenonion=1
+# torcontrol=127.0.0.1:9051
 # i2psam=127.0.0.1:7656
 CONF
 fi
