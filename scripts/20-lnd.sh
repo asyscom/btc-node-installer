@@ -78,5 +78,8 @@ ok "LND started. Initialize wallet with: sudo -u lnd lncli --rpcserver=127.0.0.1
 set_state lnd.installed
 
 # Call wallet setup immediately so the user completes LND in one go
-"$(dirname "$0")/21-lnd-wallet.sh"
+# call wallet setup right after install (robust path)
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+"$REPO_ROOT/scripts/21-lnd-wallet.sh"
 
