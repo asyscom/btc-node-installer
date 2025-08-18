@@ -1,59 +1,54 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 cd "$(dirname "$0")/.."
+
 . lib/common.sh
-require_root; load_env; ensure_state_dir; detect_pkg_mgr
+require_root; load_env; ensure_state_dir
 
-if has_state bitcoin.installed; then ok "Bitcoin Core già installato"; exit 0; fi
+if has_state bitcoin.installed; then ok "Bitcoin Core already installed"; exit 0; fi
 
-BITCOIN_VERSION="${BITCOIN_VERSION:-26.2}"
-ARCH=$(dpkg --print-architecture 2>/dev/null || echo amd64)
-
-log "Installazione Bitcoin Core $BITCOIN_VERSION"
-TMP=$(mktemp -d)
-cd "$TMP"
-URL="https://bitcoincore.org/bin/bitcoin-core-$BITCOIN_VERSION/bitcoin-$BITCOIN_VERSION-$(uname -s | tr '[:upper:]' '[:lower:]')-$ARCH.tar.gz"
-if ! curl -fSL "$URL" -o bitcoin.tar.gz; then
+log "Downloading Bitcoin Core ${BITCOIN_VERSION}..."
+URL="https://bitcoincore.org/bin/bitcoin-core-${BITCOIN_VERSION}/bitcoin-${BITCOIN_VERSION}-x86_64-linux-gnu.tar.gz"
+if ! curl -fSLO "$URL"; then
   error_exit "Failed to download Bitcoin Core ($URL). Check version/arch."
 fi
-tar -xzf bitcoin.tar.gz
+
+tar -xvf "bitcoin-${BITCOIN_VERSION}-x86_64-linux-gnu.tar.gz"
 install -m 0755 -o root -g root bitcoin-*/bin/* /usr/local/bin/
 
-# === Prompt: modalità pruned? ===
-USE_PRUNE=false
-PRUNE_GB=10
-echo
-if confirm "Vuoi attivare la modalità pruned (consigliato su dischi piccoli)?"; then
-  USE_PRUNE=true
-  read -r -p "Quanti GB dedicare ai blocchi (es. 10)? " PRUNE_GB_INPUT || true
-  if [[ -n "${PRUNE_GB_INPUT:-}" ]]; then
-    # valida intero positivo
-    if [[ "$PRUNE_GB_INPUT" =~ ^[0-9]+$ ]] && [[ "$PRUNE_GB_INPUT" -ge 1 ]]; then
-      PRUNE_GB="$PRUNE_GB_INPUT"
-    else
-      warn "Valore non valido, uso default ${PRUNE_GB} GB"
-    fi
-  fi
-fi
-# Converti GB -> MiB per bitcoin.conf (prune accetta MiB)
-PRUNE_MIB=$(( PRUNE_GB * 1024 ))
+rm -rf bitcoin-*
 
-# bitcoin.conf (txindex disabilitato se prune)
-TXINDEX=1
-if [[ "$USE_PRUNE" == "true" ]]; then
-  TXINDEX=0
-fi
+# -----------------------------------------------------------------------------
+# bitcoin.conf
+# -----------------------------------------------------------------------------
+log "Writing /etc/bitcoin/bitcoin.conf"
 
 cat > /etc/bitcoin/bitcoin.conf <<CONF
-daemon=1
+# Bitcoin Core configuration
 server=1
-rest=1
-txindex=${TXINDEX}
-blockfilterindex=1
-dbcache=2048
+daemon=0
+datadir=${BITCOIN_DATA_DIR}
+disablewallet=1
+rpccookieperms=group
+uacomment=BTC-Node-Installer
+assumevalid=0
 
-# rete
-${NETWORK}=1
+# Indexes
+blockfilterindex=1
+peerblockfilters=1
+coinstatsindex=1
+
+# Logging
+debug=tor
+debug=i2p
+nodebuglogfile=0
+
+# P2P
+listen=1
+bind=127.0.0.1
+bind=127.0.0.1=onion
+proxy=unix:/run/tor/socks
+i2psam=127.0.0.1:7656
 
 # RPC
 rpcuser=${BITCOIN_RPC_USER}
@@ -65,22 +60,28 @@ rpcport=${BITCOIN_RPC_PORT}
 zmqpubrawblock=tcp://127.0.0.1:${ZMQ_RAWBLOCK}
 zmqpubrawtx=tcp://127.0.0.1:${ZMQ_RAWTX}
 
-# dati
-datadir=/var/lib/bitcoind
+# Performance
+dbcache=2048
+blocksonly=1
 CONF
 
 if [[ "$USE_PRUNE" == "true" ]]; then
   echo "prune=${PRUNE_MIB}" >> /etc/bitcoin/bitcoin.conf
-  warn "Pruned mode enabled (${PRUNE_GB} GB ~ ${PRUNE_MIB} MiB). 'txindex=0' impostato."
-  warn "Note: Electrs and Mempool may NOT index/show full history on a pruned node."
+  warn "Pruned mode enabled (${PRUNE_GB} GB ~ ${PRUNE_MIB} MiB). 'txindex=0' enforced."
+  echo "txindex=0" >> /etc/bitcoin/bitcoin.conf
 else
-  ok "Full node: 'txindex=1' mantenuto (richiede molto spazio su disco)."
+  echo "txindex=1" >> /etc/bitcoin/bitcoin.conf
+  ok "Full node mode enabled ('txindex=1')."
 fi
 
 chown -R bitcoin:bitcoin /etc/bitcoin
 
-# unità systemd
-cat > /etc/systemd/system/bitcoind.service <<'SERVICE'
+# -----------------------------------------------------------------------------
+# systemd unit
+# -----------------------------------------------------------------------------
+log "Installing systemd unit for bitcoind"
+
+cat > /etc/systemd/system/bitcoind.service <<SERVICE
 [Unit]
 Description=Bitcoin daemon
 After=network.target
@@ -90,18 +91,20 @@ Wants=network.target
 User=bitcoin
 Group=bitcoin
 Type=simple
-ExecStart=/usr/local/bin/bitcoind -conf=/etc/bitcoin/bitcoin.conf -datadir=/var/lib/bitcoind
-ExecStop=/usr/local/bin/bitcoin-cli -conf=/etc/bitcoin/bitcoin.conf -datadir=/var/lib/bitcoind stop
+ExecStart=/usr/local/bin/bitcoind -conf=/etc/bitcoin/bitcoin.conf -datadir=${BITCOIN_DATA_DIR} -daemon=0
+ExecStop=/usr/local/bin/bitcoin-cli -conf=/etc/bitcoin/bitcoin.conf -datadir=${BITCOIN_DATA_DIR} stop
 Restart=on-failure
 TimeoutStopSec=120
 RuntimeDirectory=bitcoind
 RuntimeDirectoryMode=0750
 LimitNOFILE=65535
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
 SERVICE
 
 enable_start bitcoind.service
-ok "Bitcoin Core avviato. Check sync with: sudo -u bitcoin bitcoin-cli -datadir=/var/lib/bitcoind getblockchaininfo"
+ok "Bitcoin Core started. Monitor with: bcli getblockchaininfo"
 set_state bitcoin.installed
+
