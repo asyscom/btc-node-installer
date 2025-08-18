@@ -24,6 +24,7 @@ if ! curl -fSL "$URL" -o lnd.tar.gz; then
 fi
 tar -xzf lnd.tar.gz
 install -m 0755 -o root -g root lnd-*/lnd* /usr/local/bin/
+install -m 0755 -o root -g root lnd-*/lncli /usr/local/bin/lncli
 
 # user and dirs
 ensure_user lnd
