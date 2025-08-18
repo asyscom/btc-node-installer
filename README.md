@@ -1,15 +1,3 @@
-Perfetto 👍 capito: per adesso ti preparo **solo un nuovo `README.md` unico** da scaricare, con dentro:
-
-* Descrizione completa dello stack (Bitcoin, LND, Electrs, ThunderHub, Mempool, Tor/I2P/DNS-over-Tor come prerequisiti).
-* Specifica che **siamo in beta test**.
-* Spiegazione di come funziona `/data/*` per i dati e `/usr/local/bin` per i binari.
-* Dettagli su **pruned/full node**, alias `bcli`/`btclog`.
-* Indicazione dei comandi base per avvio/verifica.
-* Link donazioni (Lightning Address + on-chain).
-
----
-
-### Ecco il file `README.md` pronto da scaricare
 
 ````markdown
 # BTC Node Installer (Beta)
