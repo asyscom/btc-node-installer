@@ -4,6 +4,19 @@ cd "$(dirname "$0")/.."
 
 . lib/common.sh
 require_root; load_env; ensure_state_dir
+# --- compatibility prompt() if not provided by common.sh ---
+if ! command -v prompt >/dev/null 2>&1; then
+  prompt() {
+    local q="$1"; local def="${2:-}"; local ans
+    if [[ -n "$def" ]]; then
+      read -rp "${q} [${def}]: " ans
+      printf '%s\n' "${ans:-$def}"
+    else
+      read -rp "${q}: " ans
+      printf '%s\n' "${ans}"
+    fi
+  }
+fi
 
 # ----------------------------------------------------------------------
 # Safe defaults (avoid 'unbound variable' with set -u)
@@ -28,6 +41,12 @@ if [[ -z "${USE_PRUNE:-}" ]]; then
   fi
 fi
 
+# Normalize boolean (in case it's set via env as YES/True/etc.)
+case "${USE_PRUNE,,}" in
+  y|yes|true|1) USE_PRUNE=true ;;
+  *)            USE_PRUNE=false ;;
+esac
+
 # Compute PRUNE_MIB if pruning
 if [[ "${USE_PRUNE}" == "true" ]]; then
   # sanitize PRUNE_GB (digits only)
@@ -36,6 +55,11 @@ if [[ "${USE_PRUNE}" == "true" ]]; then
     PRUNE_GB=100
   fi
   PRUNE_MIB="$(( PRUNE_GB * 1024 ))"
+  # enforce Bitcoin Core minimum (>= 550 MiB)
+  if (( PRUNE_MIB < 550 )); then
+    warn "Prune size too small; bumping to 550 MiB minimum."
+    PRUNE_MIB=550
+  fi
 else
   PRUNE_MIB=""
 fi
@@ -110,19 +134,24 @@ if has_state tor.enabled; then
   cat >> /etc/bitcoin/bitcoin.conf <<'CONF'
 # Tor/I2P (enabled)
 bind=127.0.0.1
-bind=127.0.0.1=onion
-proxy=unix:/run/tor/socks
+proxy=127.0.0.1:9050
+onion=127.0.0.1:9050
+listenonion=1
+# onlynet=onion    # uncomment if you want Tor-only
 CONF
-  # Enable I2P only if our security script set a flag for it (optional)
   if has_state i2p.enabled; then
-    echo "i2psam=127.0.0.1:7656" >> /etc/bitcoin/bitcoin.conf
+    {
+      echo "i2psam=127.0.0.1:7656"
+      # echo "onlynet=i2p"  # uncomment if you want I2P-only as well
+    } >> /etc/bitcoin/bitcoin.conf
   fi
 else
   cat >> /etc/bitcoin/bitcoin.conf <<'CONF'
 # Tor/I2P (disabled here). You can enable them later via the security module.
 # bind=127.0.0.1
-# bind=127.0.0.1=onion
-# proxy=unix:/run/tor/socks
+# proxy=127.0.0.1:9050
+# onion=127.0.0.1:9050
+# listenonion=1
 # i2psam=127.0.0.1:7656
 CONF
 fi
