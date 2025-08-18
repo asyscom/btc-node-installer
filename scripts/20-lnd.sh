@@ -76,3 +76,7 @@ SERVICE
 enable_start lnd.service
 ok "LND started. Initialize wallet with: sudo -u lnd lncli --rpcserver=127.0.0.1:10009 create"
 set_state lnd.installed
+
+# Call wallet setup immediately so the user completes LND in one go
+"$(dirname "$0")/21-lnd-wallet.sh"
+
