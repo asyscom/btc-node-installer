@@ -6,18 +6,25 @@ cd "$(dirname "$0")/.."
 require_root; load_env; ensure_state_dir
 
 # -----------------------------
-# Defaults (safe)
+# Defaults
 # -----------------------------
 : "${LND_VERSION:=v0.19.2-beta}"
 : "${LND_USER:=lnd}"
-: "${LND_DATA_DIR:=/data/lnd}"          # dati e TLS persistenti
-: "${LND_CONF:=/home/lnd/lnd.conf}"     # config in HOME dell'utente lnd
+: "${LND_DATA_DIR:=/data/lnd}"          # dati + TLS persistenti
+: "${LND_CONF:=/home/lnd/lnd.conf}"     # config in HOME di lnd
 : "${NETWORK:=mainnet}"                 # mainnet|testnet|signet|regtest
 : "${BITCOIN_RPC_PORT:=8332}"
 : "${BITCOIN_RPC_USER:=btcuser}"
 : "${BITCOIN_RPC_PASSWORD:=btcpwd-strong-change-me}"
 : "${ZMQ_RAWBLOCK:=28332}"
 : "${ZMQ_RAWTX:=28333}"
+
+# Evita re-ingressi
+if has_state lnd.installing; then
+  warn "LND install is already in progress; aborting duplicate run."
+  exit 0
+fi
+set_state lnd.installing
 
 # -----------------------------
 # Create user and dirs
@@ -55,29 +62,13 @@ esac
 
 cat > "${LND_CONF}" <<CONF
 [Application Options]
-# The alias your node will use, which can be up to 32 UTF-8 characters in length
 alias=your node name
-# The color of the node in hex format, used to customize node appearance in 
-# intelligence services
 color=#ff9900
 lnddir=${LND_DATA_DIR}
 rpclisten=127.0.0.1:10009
 restlisten=127.0.0.1:8080
 listen=0.0.0.0:9735
 debuglevel=info
-# Do not archive the history of the channel.backup file
-no-backup-archive=true
-maxpendingchannels=5
-## Communication
-accept-keysend=true
-accept-amp=true
-## Rebalancing
-allow-circular-route=true
-## Performance
-gc-canceled-invoices-on-startup=true
-gc-canceled-invoices-on-the-fly=true
-ignore-historical-gossip-filters=true
-
 
 # TLS persistente e comodo per lncli/localhost
 tlsautorefresh=true
@@ -85,19 +76,29 @@ tlsdisableautofill=true
 tlsextradomain=localhost
 tlsextraip=127.0.0.1
 
-###fa verificare ####
+# Operatività
+no-backup-archive=true
+maxpendingchannels=5
+accept-keysend=true
+accept-amp=true
+allow-circular-route=true
+gc-canceled-invoices-on-startup=true
+gc-canceled-invoices-on-the-fly=true
+ignore-historical-gossip-filters=true
+
 [protocol]
 protocol.wumbo-channels=true
 protocol.option-scid-alias=true
 protocol.simple-taproot-chans=true
 protocol.zero-conf=true
 protocol.rbf-coop-close=true
+
 [wtclient]
-## Watchtower client settings
 wtclient.active=true
+
 [watchtower]
-## Watchtower server settings
 watchtower.active=true
+
 [routing]
 routing.strictgraphpruning=true
 
@@ -113,7 +114,7 @@ bitcoind.zmqpubrawblock=tcp://127.0.0.1:${ZMQ_RAWBLOCK}
 bitcoind.zmqpubrawtx=tcp://127.0.0.1:${ZMQ_RAWTX}
 CONF
 
-# Tor (se abilitato in precedenza)
+# Tor (se abilitato)
 if has_state tor.enabled; then
   cat >> "${LND_CONF}" <<'CONF'
 [tor]
@@ -130,7 +131,7 @@ chown "${LND_USER}:${LND_USER}" "${LND_CONF}"
 chmod 640 "${LND_CONF}"
 
 # -----------------------------
-# systemd unit (niente auto-unlock qui)
+# systemd unit (no auto-unlock qui)
 # -----------------------------
 cat > /etc/systemd/system/lnd.service <<SERVICE
 [Unit]
@@ -155,15 +156,22 @@ SERVICE
 systemctl daemon-reload
 systemctl enable --now lnd || true
 
-# breve attesa per permettere la creazione di tls.cert / WalletUnlocker
+# breve attesa per permettere la creazione di WalletUnlocker/TLS
 sleep 3
 
 ok "LND started. Waiting for wallet setup… (WalletUnlocker on 127.0.0.1:10009)"
 set_state lnd.installed
 
 # -----------------------------
-# Call wallet setup (absolute path)
+# Avvio automatico del wallet setup SOLO se non già fatto
 # -----------------------------
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(dirname "$SCRIPT_DIR")"
-bash "$REPO_ROOT/scripts/21-lnd-wallet.sh"
+if ! has_state lnd.wallet.done && ! has_state lnd.wallet.inprogress; then
+  set_state lnd.wallet.inprogress
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+  bash "$REPO_ROOT/scripts/21-lnd-wallet.sh" || true
+fi
+
+# cleanup flag installing (non toccare wallet.*)
+rm -f /var/lib/btc-node-installer/state/lnd.installing || true
+
