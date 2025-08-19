@@ -1,195 +1,271 @@
 #!/usr/bin/env bash
-# LND wallet setup: create or restore + secure auto-unlock
-# - Stores password at /etc/lnd/wallet.password (600, owned by lnd)
-# - Adds wallet-unlock-password-file to /etc/lnd/lnd.conf
-# - Restarts lnd and verifies with lncli getinfo
 set -Eeuo pipefail
 cd "$(dirname "$0")/.."
 
 . lib/common.sh
 require_root; load_env; ensure_state_dir
 
-# --- defaults (safe) ---
+# -----------------------------
+# Defaults (safe)
+# -----------------------------
+: "${LND_VERSION:=v0.19.2-beta}"
 : "${LND_USER:=lnd}"
-: "${LND_DATA_DIR:=/data/lnd}"
-: "${LND_RPC_ADDR:=127.0.0.1:10009}"
-: "${LND_CONF:=/etc/lnd/lnd.conf}"
-: "${LND_PASS_FILE:=/etc/lnd/wallet.password}"
+: "${LND_DATA_DIR:=/data/lnd}"          # dati e TLS persistenti
+: "${LND_CONF:=/home/lnd/lnd.conf}"     # config in HOME dell'utente lnd
+: "${NETWORK:=mainnet}"                 # mainnet|testnet|signet|regtest
+: "${BITCOIN_RPC_PORT:=8332}"
+: "${BITCOIN_RPC_USER:=btcuser}"
+: "${BITCOIN_RPC_PASSWORD:=btcpwd-strong-change-me}"
+: "${ZMQ_RAWBLOCK:=28332}"
+: "${ZMQ_RAWTX:=28333}"
 
-log "LND wallet setup (create/restore) + auto-unlock"
+# -----------------------------
+# Create user and dirs
+# -----------------------------
+ensure_user "${LND_USER}"
+mkdir -p "${LND_DATA_DIR}" "/home/${LND_USER}"
+chown -R "${LND_USER}:${LND_USER}" "${LND_DATA_DIR}" "/home/${LND_USER}"
+chmod 750 "${LND_DATA_DIR}" "/home/${LND_USER}"
 
-# --- helper: ensure lnd service is running enough to serve WalletUnlocker ---
-if ! systemctl is-active --quiet lnd; then
-  warn "lnd.service is not active yet; starting it..."
-  systemctl start lnd || true
-  sleep 2
+# -----------------------------
+# Download & install LND + lncli
+# -----------------------------
+TMPDIR="$(mktemp -d)"
+trap 'rm -rf "$TMPDIR"' EXIT
+pushd "$TMPDIR" >/dev/null
+
+URL="https://github.com/lightningnetwork/lnd/releases/download/${LND_VERSION}/lnd-linux-amd64-${LND_VERSION}.tar.gz"
+log "Downloading LND ${LND_VERSION} from ${URL}"
+curl -fSLO "$URL"
+tar -xf "lnd-linux-amd64-${LND_VERSION}.tar.gz"
+install -m 0755 -o root -g root lnd-linux-amd64-*/{lnd,lncli} /usr/local/bin/
+
+popd >/dev/null
+
+# -----------------------------
+# Build lnd.conf (minimal + TLS persistente)
+# -----------------------------
+case "${NETWORK}" in
+  mainnet|"") NETFLAG="bitcoin.mainnet=true" ;;
+  testnet)     NETFLAG="bitcoin.testnet=true" ;;
+  signet)      NETFLAG="bitcoin.signet=true" ;;
+  regtest)     NETFLAG="bitcoin.regtest=true" ;;
+  *)           NETFLAG="bitcoin.mainnet=true"; warn "Unknown NETWORK='${NETWORK}', defaulting to mainnet" ;;
+esac
+
+cat > "${LND_CONF}" <<CONF
+[Application Options]
+lnddir=${LND_DATA_DIR}
+rpclisten=127.0.0.1:10009
+restlisten=127.0.0.1:8080
+listen=0.0.0.0:9735
+debuglevel=info
+
+# TLS persistente e comodo per lncli/localhost
+tlsautorefresh=true
+tlsdisableautofill=true
+tlsextradomain=localhost
+tlsextraip=127.0.0.1
+
+[Bitcoin]
+bitcoin.node=bitcoind
+${NETFLAG}
+
+[Bitcoind]
+bitcoind.rpchost=127.0.0.1:${BITCOIN_RPC_PORT}
+bitcoind.rpcuser=${BITCOIN_RPC_USER}
+bitcoind.rpcpass=${BITCOIN_RPC_PASSWORD}
+bitcoind.zmqpubrawblock=tcp://127.0.0.1:${ZMQ_RAWBLOCK}
+bitcoind.zmqpubrawtx=tcp://127.0.0.1:${ZMQ_RAWTX}
+CONF
+
+# Tor (se abilitato in precedenza)
+if has_state tor.enabled; then
+  cat >> "${LND_CONF}" <<'CONF'
+[tor]
+tor.active=true
+tor.v3=true
+tor.socks=127.0.0.1:9050
+tor.control=127.0.0.1:9051
+tor.streamisolation=true
+CONF
+  usermod -aG debian-tor "${LND_USER}" || true
 fi
 
-# --- helper: prompt fallback (if common.sh doesn't provide it) ---
-if ! command -v prompt >/dev/null 2>&1; then
-  prompt() {
-    local q="$1"; local def="${2:-}"; local ans
-    if [[ -n "$def" ]]; then
-      read -rp "${q} [${def}]: " ans
-      printf '%s\n' "${ans:-$def}"
-    else
-      read -rp "${q}: " ans
-      printf '%s\n' "${ans}"
-    fi
-  }
-fi
+chown "${LND_USER}:${LND_USER}" "${LND_CONF}"
+chmod 640 "${LND_CONF}"
 
-# --- detect existing wallet ---
-WALLET_DB="${LND_DATA_DIR}/data/chain/bitcoin/${NETWORK:-mainnet}/wallet.db"
-wallet_exists=false
-if [[ -f "$WALLET_DB" ]]; then
-  wallet_exists=true
-  warn "An existing LND wallet was detected at: ${WALLET_DB}"
-fi
+# -----------------------------
+# systemd unit (niente auto-unlock qui)
+# -----------------------------
+cat > /etc/systemd/system/lnd.service <<SERVICE
+[Unit]
+Description=LND Lightning Network Daemon
+Wants=bitcoind.service
+After=network.target bitcoind.service
 
-# --- ensure directories & perms ---
-mkdir -p /etc/lnd
-chown -R "${LND_USER}:${LND_USER}" /etc/lnd
-chmod 750 /etc/lnd
+[Service]
+User=${LND_USER}
+Group=${LND_USER}
+Type=simple
+ExecStart=/usr/local/bin/lnd --lnddir=${LND_DATA_DIR} --configfile=${LND_CONF}
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=60
+LimitNOFILE=32768
 
-# --- ensure expect available (for non-interactive new wallet flow) ---
-if ! command -v expect >/dev/null 2>&1; then
-  detect_pkg_mgr
-  pkg_install expect
-fi
+[Install]
+WantedBy=multi-user.target
+SERVICE
 
-# --- read and save wallet password securely ---
-read_password() {
-  local p1 p2
-  while true; do
-    read -rsp "Enter LND wallet password: " p1; echo
-    read -rsp "Confirm LND wallet password: " p2; echo
-    if [[ -z "$p1" ]]; then
-      echo "[x] Password cannot be empty." >&2
-    elif [[ "$p1" != "$p2" ]]; then
-      echo "[x] Passwords do not match, try again." >&2
-    else
-      break
-    fi
+systemctl daemon-reload
+systemctl enable --now lnd || true
+
+# breve attesa per permettere la creazione di tls.cert / WalletUnlocker
+sleep 3
+
+ok "LND started. Waiting for wallet setup… (WalletUnlocker on 127.0.0.1:10009)"
+set_state lnd.installed
+
+# -----------------------------
+# Call wallet setup (absolute path)
+# -----------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+bash "$REPO_ROOT/scripts/21-lnd-wallet.sh"
+
+dragonesi@debian-btc-test:~/btc-node-installer$ 
+dragonesi@debian-btc-test:~/btc-node-installer$ cat scripts/21-lnd-wallet.sh 
+#!/usr/bin/env bash
+set -Euo pipefail
+cd "$(dirname "$0")/.."
+
+. lib/common.sh
+require_root; load_env; ensure_state_dir
+
+LND_USER="lnd"
+LND_DATA_DIR="${LND_DATA_DIR:-/data/lnd}"
+LND_RPC_ADDR="127.0.0.1:10009"
+LNCLI="/usr/local/bin/lncli"
+UNIT_FILE="/etc/systemd/system/lnd.service"
+
+FINAL_TLS="${LND_DATA_DIR}/tls.cert"
+PWD_FILE="${LND_DATA_DIR}/password.txt"    # usato SOLO se abiliti auto-unlock ora
+
+log "LND wallet setup (create/restore) — interactive first, auto-unlock opzionale dopo"
+
+# Assicura che lnd sia avviato (WalletUnlocker)
+systemctl start lnd || true
+
+wait_for_final_tls() {
+  local timeout=120 i=0
+  while (( i < timeout )); do
+    [[ -s "${FINAL_TLS}" ]] && return 0
+    sleep 1; ((i++))
   done
-  printf '%s' "$p1" > "${LND_PASS_FILE}"
-  chown "${LND_USER}:${LND_USER}" "${LND_PASS_FILE}"
-  chmod 600 "${LND_PASS_FILE}"
-  ok "Saved wallet password to ${LND_PASS_FILE} (mode 600)."
+  return 1
 }
 
-# --- write auto-unlock config into lnd.conf (idempotent) ---
-ensure_autounlock_conf() {
-  mkdir -p "$(dirname "${LND_CONF}")"
-  touch "${LND_CONF}"
-  if grep -q '^wallet-unlock-password-file=' "${LND_CONF}"; then
-    sed -i "s|^wallet-unlock-password-file=.*$|wallet-unlock-password-file=${LND_PASS_FILE}|" "${LND_CONF}"
-  else
-    printf "\n# Auto-unlock configured by btc-node-installer\nwallet-unlock-password-file=%s\n" "${LND_PASS_FILE}" >> "${LND_CONF}"
+# Attendi TLS persistente
+if ! wait_for_final_tls; then
+  warn "[!] tls.cert not found yet; restarting lnd and retrying…"
+  systemctl restart lnd || true
+  if ! wait_for_final_tls; then
+    error_exit "Final TLS certificate not found at ${FINAL_TLS}"
   fi
-  chown "${LND_USER}:${LND_USER}" "${LND_CONF}"
-  chmod 640 "${LND_CONF}"
-  ok "Updated ${LND_CONF} with wallet-unlock-password-file."
-}
-
-# --- main flow ---
-if [[ "${wallet_exists}" == "true" ]]; then
-  log "Wallet already exists. We will only set up auto-unlock."
-  read_password
-  ensure_autounlock_conf
-else
-  echo
-  echo "Choose wallet operation:"
-  echo "  1) Create NEW wallet (password automated; seed will be SHOWN ONCE)"
-  echo "  2) RESTORE wallet from existing 24-word seed (interactive)"
-  op="$(prompt "Selection (1/2)" "1")"
-
-  case "${op}" in
-    1|create|new)
-      read_password
-      ensure_autounlock_conf
-      log "Creating NEW wallet (seed will be printed by lncli; WRITE IT DOWN OFFLINE)."
-      # Use expect to pass the password automatically; choose defaults for seed passphrase (No).
-      sudo -u "${LND_USER}" -H bash -c "expect <<'EOF'
-set timeout 180
-spawn /usr/local/bin/lncli --lnddir=${LND_DATA_DIR} --rpcserver=${LND_RPC_ADDR} create
-expect {
-  -re {Input wallet password:} {
-    send -- [exec cat ${LND_PASS_FILE}]
-    send -- \"\r\"
-    exp_continue
-  }
-  -re {Confirm wallet password:} {
-    send -- [exec cat ${LND_PASS_FILE}]
-    send -- \"\r\"
-    exp_continue
-  }
-  -re {Do you have an existing cipher seed mnemonic you want to use\\? \\(Enter y/n\\):} {
-    send -- \"n\r\"
-    exp_continue
-  }
-  -re {Your cipher seed can optionally be encrypted.*\\(Enter y/n\\):} {
-    send -- \"n\r\"
-    exp_continue
-  }
-  -re {lnd successfully initialized!} {
-    # wallet created
-  }
-}
-EOF"
-      ok "Wallet created. Seed was shown above ONCE — store it securely offline."
-      ;;
-    2|restore)
-      read_password
-      ensure_autounlock_conf
-      warn "Launching interactive RESTORE: enter your 24-word seed (and seed passphrase if you used one)."
-      # For restore, let user type seed interactively (more reliable for 24 words).
-      sudo -u "${LND_USER}" /usr/local/bin/lncli --lnddir="${LND_DATA_DIR}" --rpcserver="${LND_RPC_ADDR}" create || true
-      ok "Restore flow completed (if you entered a valid seed)."
-      ;;
-    *)
-      warn "Unknown selection '${op}'. Defaulting to NEW wallet."
-      read_password
-      ensure_autounlock_conf
-      sudo -u "${LND_USER}" -H bash -c "expect <<'EOF'
-set timeout 180
-spawn /usr/local/bin/lncli --lnddir=${LND_DATA_DIR} --rpcserver=${LND_RPC_ADDR} create
-expect {
-  -re {Input wallet password:} {
-    send -- [exec cat ${LND_PASS_FILE}]
-    send -- \"\r\"
-    exp_continue
-  }
-  -re {Confirm wallet password:} {
-    send -- [exec cat ${LND_PASS_FILE}]
-    send -- \"\r\"
-    exp_continue
-  }
-  -re {Do you have an existing cipher seed mnemonic you want to use\\? \\(Enter y/n\\):} {
-    send -- \"n\r\"
-    exp_continue
-  }
-  -re {Your cipher seed can optionally be encrypted.*\\(Enter y/n\\):} {
-    send -- \"n\r\"
-    exp_continue
-  }
-  -re {lnd successfully initialized!} {
-    # wallet created
-  }
-}
-EOF"
-      ok "Wallet created (default path). Seed was shown above ONCE — store it securely offline."
-      ;;
-  esac
 fi
+ok "TLS ready at ${FINAL_TLS}"
 
-# --- restart lnd to ensure auto-unlock takes effect ---
-log "Restarting lnd to apply auto-unlock..."
-systemctl restart lnd
+echo
+echo "Choose wallet operation:"
+echo "  1) Create NEW wallet (seed will be SHOWN ONCE)"
+echo "  2) RESTORE wallet from existing 24-word seed (interactive)"
+read -rp "Selection (1/2) [1]: " choice
+choice="${choice:-1}"
+
+set +e
+case "$choice" in
+  1|create|new)
+    echo "[i] Creating NEW wallet (seed will be printed; WRITE IT DOWN OFFLINE)."
+    sudo -u "${LND_USER}" "${LNCLI}" \
+      --lnddir="${LND_DATA_DIR}" \
+      --rpcserver="${LND_RPC_ADDR}" \
+      --tlscertpath="${FINAL_TLS}" \
+      create
+    ;;
+  2|restore)
+    echo "[i] Restoring wallet from SEED (you will be prompted interactively)."
+    sudo -u "${LND_USER}" "${LNCLI}" \
+      --lnddir="${LND_DATA_DIR}" \
+      --rpcserver="${LND_RPC_ADDR}" \
+      --tlscertpath="${FINAL_TLS}" \
+      create
+    ;;
+  *)
+    warn "Unknown selection '${choice}', defaulting to NEW wallet."
+    sudo -u "${LND_USER}" "${LNCLI}" \
+      --lnddir="${LND_DATA_DIR}" \
+      --rpcserver="${LND_RPC_ADDR}" \
+      --tlscertpath="${FINAL_TLS}" \
+      create
+    ;;
+esac
+set -e
+
+echo "[i] Restarting lnd…"
+systemctl restart lnd || true
 sleep 2
 
-# --- quick check ---
-sudo -u "${LND_USER}" /usr/local/bin/lncli --lnddir="${LND_DATA_DIR}" --rpcserver="${LND_RPC_ADDR}" getinfo || true
+# test lncli
+sudo -u "${LND_USER}" "${LNCLI}" \
+  --lnddir="${LND_DATA_DIR}" \
+  --rpcserver="${LND_RPC_ADDR}" \
+  --tlscertpath="${FINAL_TLS}" \
+  getinfo || true
 
-ok "LND wallet setup completed (auto-unlock active). If Bitcoin is still syncing, synced_to_chain=false is expected."
+ok "Wallet created/restored successfully."
 
+# -----------------------------
+# Auto-unlock (opzionale)
+# -----------------------------
+echo
+read -rp "Enable AUTO-UNLOCK at boot now? [y/N]: " au
+case "${au,,}" in
+  y|yes)
+p1=""; p2=""
+    while true; do
+      read -rsp "Enter LND wallet password for auto-unlock (min 8 chars): " p1; echo
+      read -rsp "Confirm password: " p2; echo
+      if [[ ${#p1} -lt 8 ]]; then
+        echo "[x] Too short." >&2
+      elif [[ "$p1" != "$p2" ]]; then
+        echo "[x] Mismatch, try again." >&2
+      else
+        break
+      fi
+    done
+    printf '%s' "$p1" > "${PWD_FILE}"
+    chown "${LND_USER}:${LND_USER}" "${PWD_FILE}"
+    chmod 600 "${PWD_FILE}"
+    ok "Saved auto-unlock password to ${PWD_FILE}"
+
+    # aggiungi flag a systemd ExecStart se non presente
+    if ! grep -q -- '--wallet-unlock-password-file=' "${UNIT_FILE}"; then
+      sed -i "s#^ExecStart=.*#ExecStart=/usr/local/bin/lnd --lnddir=${LND_DATA_DIR} --configfile=/home/${LND_USER}/lnd.conf --wallet-unlock-password-file=${PWD_FILE}#g" "${UNIT_FILE}"
+      systemctl daemon-reload
+    fi
+
+    echo "[i] Restarting lnd to test auto-unlock…"
+    systemctl restart lnd || true
+    sleep 2
+    sudo -u "${LND_USER}" "${LNCLI}" \
+      --lnddir="${LND_DATA_DIR}" \
+      --rpcserver="${LND_RPC_ADDR}" \
+      --tlscertpath="${FINAL_TLS}" \
+      getinfo || true
+    ;;
+  *) : ;;
+esac
+
+ok "LND wallet setup completed. If Bitcoin is still syncing, synced_to_chain=false is expected."
+set_state lnd.wallet.done

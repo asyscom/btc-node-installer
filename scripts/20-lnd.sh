@@ -1,50 +1,75 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 cd "$(dirname "$0")/.."
+
 . lib/common.sh
-require_root; load_env; ensure_state_dir; detect_pkg_mgr
+require_root; load_env; ensure_state_dir
 
-if has_state lnd.installed; then ok "LND already installed"; exit 0; fi
+# -----------------------------
+# Defaults (safe)
+# -----------------------------
+: "${LND_VERSION:=v0.19.2-beta}"
+: "${LND_USER:=lnd}"
+: "${LND_DATA_DIR:=/data/lnd}"          # dati e TLS persistenti
+: "${LND_CONF:=/home/lnd/lnd.conf}"     # config in HOME dell'utente lnd
+: "${NETWORK:=mainnet}"                 # mainnet|testnet|signet|regtest
+: "${BITCOIN_RPC_PORT:=8332}"
+: "${BITCOIN_RPC_USER:=btcuser}"
+: "${BITCOIN_RPC_PASSWORD:=btcpwd-strong-change-me}"
+: "${ZMQ_RAWBLOCK:=28332}"
+: "${ZMQ_RAWTX:=28333}"
 
-detect_pkg_mgr; pkg_update; pkg_install wget tar
+# -----------------------------
+# Create user and dirs
+# -----------------------------
+ensure_user "${LND_USER}"
+mkdir -p "${LND_DATA_DIR}" "/home/${LND_USER}"
+chown -R "${LND_USER}:${LND_USER}" "${LND_DATA_DIR}" "/home/${LND_USER}"
+chmod 750 "${LND_DATA_DIR}" "/home/${LND_USER}"
 
-# Download LND binaries
-LND_VERSION="${LND_VERSION:-v0.18.3-beta}"
-ARCH=$(uname -m)
-case "$ARCH" in
-  x86_64) LND_ARCH=amd64 ;;
-  aarch64|arm64) LND_ARCH=arm64 ;;
-  *) LND_ARCH=amd64 ;;
+# -----------------------------
+# Download & install LND + lncli
+# -----------------------------
+TMPDIR="$(mktemp -d)"
+trap 'rm -rf "$TMPDIR"' EXIT
+pushd "$TMPDIR" >/dev/null
+
+URL="https://github.com/lightningnetwork/lnd/releases/download/${LND_VERSION}/lnd-linux-amd64-${LND_VERSION}.tar.gz"
+log "Downloading LND ${LND_VERSION} from ${URL}"
+curl -fSLO "$URL"
+tar -xf "lnd-linux-amd64-${LND_VERSION}.tar.gz"
+install -m 0755 -o root -g root lnd-linux-amd64-*/{lnd,lncli} /usr/local/bin/
+
+popd >/dev/null
+
+# -----------------------------
+# Build lnd.conf (minimal + TLS persistente)
+# -----------------------------
+case "${NETWORK}" in
+  mainnet|"") NETFLAG="bitcoin.mainnet=true" ;;
+  testnet)     NETFLAG="bitcoin.testnet=true" ;;
+  signet)      NETFLAG="bitcoin.signet=true" ;;
+  regtest)     NETFLAG="bitcoin.regtest=true" ;;
+  *)           NETFLAG="bitcoin.mainnet=true"; warn "Unknown NETWORK='${NETWORK}', defaulting to mainnet" ;;
 esac
 
-TMP=$(mktemp -d); cd "$TMP"
-URL="https://github.com/lightningnetwork/lnd/releases/download/${LND_VERSION}/lnd-linux-${LND_ARCH}-${LND_VERSION}.tar.gz"
-if ! curl -fSL "$URL" -o lnd.tar.gz; then
-  error_exit "Failed to download LND ($URL)."
-fi
-tar -xzf lnd.tar.gz
-install -m 0755 -o root -g root lnd-*/lnd* /usr/local/bin/
-install -m 0755 -o root -g root lnd-*/lncli /usr/local/bin/lncli
-
-# user and dirs
-ensure_user lnd
-mkdir -p /var/lib/lnd /etc/lnd
-chown -R lnd:lnd /var/lib/lnd /etc/lnd
-
-# lnd.conf
-cat > /etc/lnd/lnd.conf <<CONF
+cat > "${LND_CONF}" <<CONF
 [Application Options]
-datadir=/var/lib/lnd
-tlscertpath=/var/lib/lnd/tls.cert
-tlskeypath=/var/lib/lnd/tls.key
-adminmacaroonpath=/var/lib/lnd/data/chain/bitcoin/${NETWORK}/admin.macaroon
-listen=0.0.0.0:9735
+lnddir=${LND_DATA_DIR}
 rpclisten=127.0.0.1:10009
+restlisten=127.0.0.1:8080
+listen=0.0.0.0:9735
 debuglevel=info
 
+# TLS persistente e comodo per lncli/localhost
+tlsautorefresh=true
+tlsdisableautofill=true
+tlsextradomain=localhost
+tlsextraip=127.0.0.1
+
 [Bitcoin]
-bitcoin.${NETWORK}=true
 bitcoin.node=bitcoind
+${NETFLAG}
 
 [Bitcoind]
 bitcoind.rpchost=127.0.0.1:${BITCOIN_RPC_PORT}
@@ -53,34 +78,58 @@ bitcoind.rpcpass=${BITCOIN_RPC_PASSWORD}
 bitcoind.zmqpubrawblock=tcp://127.0.0.1:${ZMQ_RAWBLOCK}
 bitcoind.zmqpubrawtx=tcp://127.0.0.1:${ZMQ_RAWTX}
 CONF
-chown -R lnd:lnd /etc/lnd
 
-# systemd
-cat > /etc/systemd/system/lnd.service <<'SERVICE'
+# Tor (se abilitato in precedenza)
+if has_state tor.enabled; then
+  cat >> "${LND_CONF}" <<'CONF'
+[tor]
+tor.active=true
+tor.v3=true
+tor.socks=127.0.0.1:9050
+tor.control=127.0.0.1:9051
+tor.streamisolation=true
+CONF
+  usermod -aG debian-tor "${LND_USER}" || true
+fi
+
+chown "${LND_USER}:${LND_USER}" "${LND_CONF}"
+chmod 640 "${LND_CONF}"
+
+# -----------------------------
+# systemd unit (niente auto-unlock qui)
+# -----------------------------
+cat > /etc/systemd/system/lnd.service <<SERVICE
 [Unit]
 Description=LND Lightning Network Daemon
 Wants=bitcoind.service
-After=bitcoind.service
+After=network.target bitcoind.service
 
 [Service]
-User=lnd
-Group=lnd
+User=${LND_USER}
+Group=${LND_USER}
 Type=simple
-ExecStart=/usr/local/bin/lnd --configfile=/etc/lnd/lnd.conf
+ExecStart=/usr/local/bin/lnd --lnddir=${LND_DATA_DIR} --configfile=${LND_CONF}
 Restart=on-failure
-LimitNOFILE=128000
+RestartSec=5
+TimeoutStopSec=60
+LimitNOFILE=32768
 
 [Install]
 WantedBy=multi-user.target
 SERVICE
 
-enable_start lnd.service
-ok "LND started. Initialize wallet with: sudo -u lnd lncli --rpcserver=127.0.0.1:10009 create"
+systemctl daemon-reload
+systemctl enable --now lnd || true
+
+# breve attesa per permettere la creazione di tls.cert / WalletUnlocker
+sleep 3
+
+ok "LND started. Waiting for wallet setup… (WalletUnlocker on 127.0.0.1:10009)"
 set_state lnd.installed
 
-# Call wallet setup immediately so the user completes LND in one go
-# call wallet setup right after install (robust path)
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# -----------------------------
+# Call wallet setup (absolute path)
+# -----------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
-"$REPO_ROOT/scripts/21-lnd-wallet.sh"
-
+bash "$REPO_ROOT/scripts/21-lnd-wallet.sh"
