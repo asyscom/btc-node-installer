@@ -4,97 +4,68 @@ cd "$(dirname "$0")/.."
 
 . lib/common.sh
 require_root; load_env; ensure_state_dir
-# --- compatibility prompt() if not provided by common.sh ---
+
+# --- helpers (fallback se mancassero in common.sh) ---
 if ! command -v prompt >/dev/null 2>&1; then
-  prompt() {
-    local q="$1"; local def="${2:-}"; local ans
-    if [[ -n "$def" ]]; then
-      read -rp "${q} [${def}]: " ans
-      printf '%s\n' "${ans:-$def}"
-    else
-      read -rp "${q}: " ans
-      printf '%s\n' "${ans}"
-    fi
-  }
+  prompt() { local q="$1"; local def="${2:-}"; local ans; if [[ -n "$def" ]]; then read -rp "${q} [${def}]: " ans; printf '%s\n' "${ans:-$def}"; else read -rp "${q}: " ans; printf '%s\n' "$ans"; fi; }
 fi
 
-# ----------------------------------------------------------------------
-# Safe defaults (avoid 'unbound variable' with set -u)
-# ----------------------------------------------------------------------
-: "${BITCOIN_VERSION:?}"                # must be provided (from .env)
+# ---------------------------------------
+# Config (env + default sicuri)
+# ---------------------------------------
+: "${BITCOIN_VERSION:?Set BITCOIN_VERSION in .env}"
 : "${BITCOIN_DATA_DIR:=/data/bitcoin}"
-: "${BITCOIN_RPC_USER:=btcuser}"
-: "${BITCOIN_RPC_PASSWORD:=change-me}"
 : "${BITCOIN_RPC_PORT:=8332}"
 : "${ZMQ_RAWBLOCK:=28332}"
 : "${ZMQ_RAWTX:=28333}"
-: "${NETWORK:=mainnet}"                 # mainnet | testnet | signet | regtest
+: "${NETWORK:=mainnet}"   # mainnet|testnet|signet|regtest
 
-# Ask interactively for prune if not preset via env
+# Prompt prune se non specificato
 if [[ -z "${USE_PRUNE:-}" ]]; then
   if confirm "Enable pruned mode for Bitcoin Core?"; then
     USE_PRUNE=true
-    PRUNE_GB="$(prompt "How many GB do you want to allocate for pruned blocks?" "100")"
+    PRUNE_GB="$(prompt "How many GB for pruned blocks?" "100")"
   else
     USE_PRUNE=false
     PRUNE_GB=""
   fi
 fi
 
-# Normalize boolean (in case it's set via env as YES/True/etc.)
 case "${USE_PRUNE,,}" in
-  y|yes|true|1) USE_PRUNE=true ;;
-  *)            USE_PRUNE=false ;;
+  y|yes|true|1) USE_PRUNE=true ;; *) USE_PRUNE=false ;;
 esac
 
-# Compute PRUNE_MIB if pruning
 if [[ "${USE_PRUNE}" == "true" ]]; then
-  # sanitize PRUNE_GB (digits only)
-  if [[ -z "${PRUNE_GB}" || ! "${PRUNE_GB}" =~ ^[0-9]+$ ]]; then
-    warn "Invalid prune size; defaulting to 100 GB."
-    PRUNE_GB=100
-  fi
+  [[ -n "${PRUNE_GB:-}" && "${PRUNE_GB}" =~ ^[0-9]+$ ]] || PRUNE_GB=100
   PRUNE_MIB="$(( PRUNE_GB * 1024 ))"
-
-  # enforce Bitcoin Core minimum (>= 550 MiB)
-  if (( PRUNE_MIB < 550 )); then
-    warn "Prune size too small; bumping to 550 MiB minimum."
-    PRUNE_MIB=550
-  fi
+  (( PRUNE_MIB >= 550 )) || PRUNE_MIB=550
 else
   PRUNE_MIB=""
 fi
 
-# Ensure data dir exists
-mkdir -p "${BITCOIN_DATA_DIR}"
-chown -R bitcoin:bitcoin "${BITCOIN_DATA_DIR}"
+# ---------------------------------------
+# Utente + cartelle
+# ---------------------------------------
+ensure_user bitcoin
+mkdir -p "${BITCOIN_DATA_DIR}" /etc/bitcoin
+chown -R bitcoin:bitcoin "${BITCOIN_DATA_DIR}" /etc/bitcoin
 chmod 750 "${BITCOIN_DATA_DIR}"
 
-if has_state bitcoin.installed; then
-  if confirm "Bitcoin Core appears to be already installed. Re-run this installer anyway?"; then
-    warn "Re-running Bitcoin Core installer as requested."
-  else
-    ok "Skipped Bitcoin Core (already installed)."
-    exit 0
-  fi
-fi
-
-# ----------------------------------------------------------------------
-# Download & install Bitcoin Core
-# ----------------------------------------------------------------------
-log "Downloading Bitcoin Core ${BITCOIN_VERSION}..."
+# ---------------------------------------
+# Install Bitcoin Core
+# ---------------------------------------
+log "Downloading Bitcoin Core ${BITCOIN_VERSION}…"
+TMPDIR="$(mktemp -d)"; trap 'rm -rf "$TMPDIR"' EXIT
+pushd "$TMPDIR" >/dev/null
 URL="https://bitcoincore.org/bin/bitcoin-core-${BITCOIN_VERSION}/bitcoin-${BITCOIN_VERSION}-x86_64-linux-gnu.tar.gz"
-if ! curl -fSLO "$URL"; then
-  error_exit "Failed to download Bitcoin Core ($URL). Check version/arch."
-fi
-
-tar -xvf "bitcoin-${BITCOIN_VERSION}-x86_64-linux-gnu.tar.gz"
+curl -fSLO "$URL"
+tar -xf "bitcoin-${BITCOIN_VERSION}-x86_64-linux-gnu.tar.gz"
 install -m 0755 -o root -g root bitcoin-*/bin/* /usr/local/bin/
-rm -rf "bitcoin-${BITCOIN_VERSION}-x86_64-linux-gnu.tar.gz" bitcoin-*
+popd >/dev/null
 
-# ----------------------------------------------------------------------
-# Write bitcoin.conf
-# ----------------------------------------------------------------------
+# ---------------------------------------
+# bitcoin.conf (RPC cookie)
+# ---------------------------------------
 log "Writing /etc/bitcoin/bitcoin.conf"
 mkdir -p /etc/bitcoin
 cat > /etc/bitcoin/bitcoin.conf <<CONF
@@ -103,9 +74,7 @@ server=1
 daemon=0
 datadir=${BITCOIN_DATA_DIR}
 disablewallet=1
-rpccookieperms=group
 uacomment=BTC-Node-Installer
-assumevalid=0
 
 # Indexes
 blockfilterindex=1
@@ -113,20 +82,35 @@ peerblockfilters=1
 coinstatsindex=1
 
 # Logging
-debug=tor
-debug=i2p
-nodebuglogfile=0
+# (no -debuglogfile=0 to avoid confusing warning)
+# add debug= lines if you wish, e.g.:
+# debug=tor
+# debug=i2p
 
 # Networking
 listen=1
+# If Tor/I2P module is enabled we'll append those settings below
+
+# RPC
+# Cookie auth only; allow localhost and bind to loopback
+rpcallowip=127.0.0.1
+rpcbind=127.0.0.1
+
+# ZMQ
+zmqpubrawblock=tcp://127.0.0.1:${ZMQ_RAWBLOCK}
+zmqpubrawtx=tcp://127.0.0.1:${ZMQ_RAWTX}
+
+# Performance
+dbcache=2048
+blocksonly=1
 CONF
 
-# Network selection (default is mainnet)
+# Network selection (default mainnet)
 case "${NETWORK}" in
   testnet)  echo "testnet=1"  >> /etc/bitcoin/bitcoin.conf ;;
   signet)   echo "signet=1"   >> /etc/bitcoin/bitcoin.conf ;;
   regtest)  echo "regtest=1"  >> /etc/bitcoin/bitcoin.conf ;;
-  mainnet|"") : ;; # nothing
+  mainnet|"") : ;;
   *) warn "Unknown NETWORK='${NETWORK}', using mainnet defaults." ;;
 esac
 
@@ -144,53 +128,75 @@ CONF
   if has_state i2p.enabled; then
     echo "i2psam=127.0.0.1:7656" >> /etc/bitcoin/bitcoin.conf
   fi
-else
-  cat >> /etc/bitcoin/bitcoin.conf <<'CONF'
-# Tor/I2P disabled here. You can enable them later via the security module.
-# proxy=127.0.0.1:9050
-# onion=127.0.0.1:9050
-# listenonion=1
-# torcontrol=127.0.0.1:9051
-# i2psam=127.0.0.1:7656
-CONF
 fi
-
-# RPC & ZMQ
-cat >> /etc/bitcoin/bitcoin.conf <<CONF
-# RPC
-rpcuser=${BITCOIN_RPC_USER}
-rpcpassword=${BITCOIN_RPC_PASSWORD}
-rpcallowip=127.0.0.1
-rpcport=${BITCOIN_RPC_PORT}
-
-# ZMQ
-zmqpubrawblock=tcp://127.0.0.1:${ZMQ_RAWBLOCK}
-zmqpubrawtx=tcp://127.0.0.1:${ZMQ_RAWTX}
-
-# Performance
-dbcache=2048
-blocksonly=1
-CONF
 
 # Prune/full mode
 if [[ "${USE_PRUNE}" == "true" ]]; then
-  {
-    echo "prune=${PRUNE_MIB}"
-    echo "txindex=0"
-  } >> /etc/bitcoin/bitcoin.conf
+  echo "prune=${PRUNE_MIB}" >> /etc/bitcoin/bitcoin.conf
+  echo "txindex=0"          >> /etc/bitcoin/bitcoin.conf
   warn "Pruned mode enabled (${PRUNE_GB} GB ~ ${PRUNE_MIB} MiB). 'txindex=0' enforced."
 else
-  echo "txindex=1" >> /etc/bitcoin/bitcoin.conf
+  echo "txindex=1"          >> /etc/bitcoin/bitcoin.conf
   ok "Full node mode enabled ('txindex=1')."
 fi
 
 chown -R bitcoin:bitcoin /etc/bitcoin
 
-# ----------------------------------------------------------------------
+# ---------------------------------------
+# PostStart script: attende .cookie e dà ACL a lnd
+# ---------------------------------------
+if ! command -v setfacl >/dev/null 2>&1; then
+  apt-get update -y && apt-get install -y acl
+fi
+
+install -m 0755 -o root -g root /dev/stdin /usr/local/sbin/bitcoind-poststart.sh <<SH
+#!/usr/bin/env bash
+set -euo pipefail
+COOKIE="${BITCOIN_DATA_DIR}/.cookie"
+for i in \$(seq 1 60); do
+  if [ -f "\$COOKIE" ]; then
+    setfacl -m u:lnd:r "\$COOKIE" || exit 1
+    exit 0
+  fi
+  sleep 1
+done
+echo "[x] .cookie not found in 60s" >&2
+exit 1
+SH
+
+
+# Ensure 'acl' exists, write cookie ACL helper
+if ! command -v setfacl >/dev/null 2>&1; then
+  apt-get update -y && apt-get install -y acl
+fi
+
+cat > /usr/local/bin/btc-cookie-acl.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+COOKIE="/data/bitcoin/.cookie"
+for i in $(seq 1 60); do
+  if [ -f "$COOKIE" ]; then
+    # keep ownership under bitcoin but allow lnd to read
+    chown bitcoin:bitcoin "$COOKIE" || true
+    if command -v setfacl >/devnull 2>&1; then
+      setfacl -m u:lnd:r "$COOKIE" || true
+    else
+      chmod g+r "$COOKIE" || true
+    fi
+    exit 0
+  fi
+  sleep 1
+done
+exit 1
+SH
+chmod +x /usr/local/bin/btc-cookie-acl.sh
+
+
+# ---------------------------------------
 # systemd unit
-# ----------------------------------------------------------------------
+# ---------------------------------------
 log "Installing systemd unit for bitcoind"
-cat > /etc/systemd/system/bitcoind.service <<SERVICE
+cat > /etc/systemd/system/bitcoind.service <<'SERVICE'
 [Unit]
 Description=Bitcoin daemon
 After=network.target
@@ -200,9 +206,11 @@ Wants=network.target
 User=bitcoin
 Group=bitcoin
 Type=simple
-ExecStart=/usr/local/bin/bitcoind -conf=/etc/bitcoin/bitcoin.conf -datadir=${BITCOIN_DATA_DIR} -daemon=0
-ExecStop=/usr/local/bin/bitcoin-cli -conf=/etc/bitcoin/bitcoin.conf -datadir=${BITCOIN_DATA_DIR} stop
+ExecStart=/usr/local/bin/bitcoind -conf=/etc/bitcoin/bitcoin.conf -datadir=/data/bitcoin -daemon=0
+ExecStartPost=/usr/local/bin/btc-cookie-acl.sh
+ExecStop=/usr/local/bin/bitcoin-cli -conf=/etc/bitcoin/bitcoin.conf -datadir=/data/bitcoin stop
 Restart=on-failure
+RestartSec=5
 TimeoutStopSec=120
 RuntimeDirectory=bitcoind
 RuntimeDirectoryMode=0750

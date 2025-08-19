@@ -10,18 +10,16 @@ require_root; load_env; ensure_state_dir
 # -----------------------------
 : "${LND_VERSION:=v0.19.2-beta}"
 : "${LND_USER:=lnd}"
-: "${LND_DATA_DIR:=/data/lnd}"          # dati + TLS persistenti
-: "${LND_CONF:=/home/lnd/lnd.conf}"     # config in HOME di lnd
-: "${NETWORK:=mainnet}"                 # mainnet|testnet|signet|regtest
-: "${BITCOIN_RPC_PORT:=8332}"
-: "${BITCOIN_RPC_USER:=btcuser}"
-: "${BITCOIN_RPC_PASSWORD:=btcpwd-strong-change-me}"
+: "${LND_DATA_DIR:=/data/lnd}"           # dati + TLS
+: "${LND_CONF:=/home/lnd/lnd.conf}"      # config nella HOME di lnd
+: "${BITCOIN_DATA_DIR:=/data/bitcoin}"   # per cookie path
+: "${NETWORK:=mainnet}"                  # mainnet|testnet|signet|regtest
 : "${ZMQ_RAWBLOCK:=28332}"
 : "${ZMQ_RAWTX:=28333}"
 
 # Evita re-ingressi
 if has_state lnd.installing; then
-  warn "LND install is already in progress; aborting duplicate run."
+  warn "LND install already in progress; skipping duplicate run."
   exit 0
 fi
 set_state lnd.installing
@@ -40,17 +38,15 @@ chmod 750 "${LND_DATA_DIR}" "/home/${LND_USER}"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 pushd "$TMPDIR" >/dev/null
-
 URL="https://github.com/lightningnetwork/lnd/releases/download/${LND_VERSION}/lnd-linux-amd64-${LND_VERSION}.tar.gz"
 log "Downloading LND ${LND_VERSION} from ${URL}"
 curl -fSLO "$URL"
 tar -xf "lnd-linux-amd64-${LND_VERSION}.tar.gz"
 install -m 0755 -o root -g root lnd-linux-amd64-*/{lnd,lncli} /usr/local/bin/
-
 popd >/dev/null
 
 # -----------------------------
-# Build lnd.conf (minimal + TLS persistente)
+# Build lnd.conf (RPC cookie, NO user/pass)
 # -----------------------------
 case "${NETWORK}" in
   mainnet|"") NETFLAG="bitcoin.mainnet=true" ;;
@@ -70,7 +66,7 @@ restlisten=127.0.0.1:8080
 listen=0.0.0.0:9735
 debuglevel=info
 
-# TLS persistente e comodo per lncli/localhost
+# TLS persistente utile per lncli/localhost
 tlsautorefresh=true
 tlsdisableautofill=true
 tlsextradomain=localhost
@@ -108,8 +104,7 @@ ${NETFLAG}
 
 [Bitcoind]
 bitcoind.rpchost=127.0.0.1:${BITCOIN_RPC_PORT}
-bitcoind.rpcuser=${BITCOIN_RPC_USER}
-bitcoind.rpcpass=${BITCOIN_RPC_PASSWORD}
+bitcoind.rpccookie=/data/bitcoin/.cookie
 bitcoind.zmqpubrawblock=tcp://127.0.0.1:${ZMQ_RAWBLOCK}
 bitcoind.zmqpubrawtx=tcp://127.0.0.1:${ZMQ_RAWTX}
 CONF
@@ -131,7 +126,7 @@ chown "${LND_USER}:${LND_USER}" "${LND_CONF}"
 chmod 640 "${LND_CONF}"
 
 # -----------------------------
-# systemd unit (no auto-unlock qui)
+# systemd unit (no auto-unlock qui; lo offre 21-lnd-wallet)
 # -----------------------------
 cat > /etc/systemd/system/lnd.service <<SERVICE
 [Unit]
@@ -156,15 +151,11 @@ SERVICE
 systemctl daemon-reload
 systemctl enable --now lnd || true
 
-# breve attesa per permettere la creazione di WalletUnlocker/TLS
 sleep 3
-
 ok "LND started. Waiting for wallet setup… (WalletUnlocker on 127.0.0.1:10009)"
 set_state lnd.installed
 
-# -----------------------------
-# Avvio automatico del wallet setup SOLO se non già fatto
-# -----------------------------
+# Avvio automatico del wallet setup solo se non già fatto
 if ! has_state lnd.wallet.done && ! has_state lnd.wallet.inprogress; then
   set_state lnd.wallet.inprogress
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -172,6 +163,6 @@ if ! has_state lnd.wallet.done && ! has_state lnd.wallet.inprogress; then
   bash "$REPO_ROOT/scripts/21-lnd-wallet.sh" || true
 fi
 
-# cleanup flag installing (non toccare wallet.*)
+# cleanup flag installing
 rm -f /var/lib/btc-node-installer/state/lnd.installing || true
 
