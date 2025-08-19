@@ -55,17 +55,51 @@ esac
 
 cat > "${LND_CONF}" <<CONF
 [Application Options]
+# The alias your node will use, which can be up to 32 UTF-8 characters in length
+alias=your node name
+# The color of the node in hex format, used to customize node appearance in 
+# intelligence services
+color=#ff9900
 lnddir=${LND_DATA_DIR}
 rpclisten=127.0.0.1:10009
 restlisten=127.0.0.1:8080
 listen=0.0.0.0:9735
 debuglevel=info
+# Do not archive the history of the channel.backup file
+no-backup-archive=true
+maxpendingchannels=5
+## Communication
+accept-keysend=true
+accept-amp=true
+## Rebalancing
+allow-circular-route=true
+## Performance
+gc-canceled-invoices-on-startup=true
+gc-canceled-invoices-on-the-fly=true
+ignore-historical-gossip-filters=true
+
 
 # TLS persistente e comodo per lncli/localhost
 tlsautorefresh=true
 tlsdisableautofill=true
 tlsextradomain=localhost
 tlsextraip=127.0.0.1
+
+###fa verificare ####
+[protocol]
+protocol.wumbo-channels=true
+protocol.option-scid-alias=true
+protocol.simple-taproot-chans=true
+protocol.zero-conf=true
+protocol.rbf-coop-close=true
+[wtclient]
+## Watchtower client settings
+wtclient.active=true
+[watchtower]
+## Watchtower server settings
+watchtower.active=true
+[routing]
+routing.strictgraphpruning=true
 
 [Bitcoin]
 bitcoin.node=bitcoind
