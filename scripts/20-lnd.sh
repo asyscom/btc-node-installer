@@ -136,10 +136,14 @@ Wants=bitcoind.service
 After=network.target bitcoind.service
 
 [Service]
-User=${LND_USER}
-Group=${LND_USER}
 Type=simple
-ExecStart=/usr/local/bin/lnd --lnddir=${LND_DATA_DIR} --configfile=${LND_CONF}
+#User=${LND_USER}
+User=lnd
+#Group=${LND_USER}
+Group=lnd
+ExecStartPre=/bin/bash -c 'for i in {1..60}; do [ -r /data/bitcoin/.cookie ] && exit 0; sleep 1; done; echo "Cookie not readable"; exit 1'
+#ExecStart=/usr/local/bin/lnd --lnddir=${LND_DATA_DIR} --configfile=${LND_CONF}
+ExecStart=/usr/local/bin/lnd --lnddir=/data/lnd --configfile=/home/lnd/lnd.conf
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=60

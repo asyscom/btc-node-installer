@@ -136,30 +136,26 @@ if ! command -v setfacl >/dev/null 2>&1; then
   apt-get update -y && apt-get install -y acl
 fi
 
-# Script helper
-cat > /usr/local/bin/btc-cookie-acl.sh <<'SH'
+sudo tee /usr/local/bin/btc-cookie-acl.sh >/dev/null <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-
 COOKIE="/data/bitcoin/.cookie"
 
-# Garantisci traversal (exec) sulle directory per l'utente lnd
-setfacl -m u:lnd:rx /data       2>/dev/null || true
-setfacl -m u:lnd:rx /data/bitcoin 2>/dev/null || true
-# Ereditarietà per futuri file nella dir
-setfacl -d -m u:lnd:rx /data/bitcoin 2>/dev/null || true
-
-# Attendi la creazione del cookie e assegna read a lnd
-for _ in $(seq 1 60); do
-  if [[ -f "$COOKIE" ]]; then
-    setfacl -m u:lnd:r "$COOKIE" 2>/dev/null || true
+# Attendi fino a 60s che nasca il cookie, poi applica ACL
+for i in $(seq 1 60); do
+  if [ -f "$COOKIE" ]; then
+    # Directory traversal (anche default per nuovi file/dir)
+    setfacl -m u:lnd:rx /data /data/bitcoin || true
+    setfacl -d -m u:lnd:rx /data/bitcoin   || true
+    # Lettura del cookie per l'utente lnd
+    setfacl -m u:lnd:r "$COOKIE" || true
     exit 0
   fi
   sleep 1
 done
 exit 1
 SH
-chmod +x /usr/local/bin/btc-cookie-acl.sh
+sudo chmod +x /usr/local/bin/btc-cookie-acl.sh
 
 # -----------------------------
 # systemd unit
