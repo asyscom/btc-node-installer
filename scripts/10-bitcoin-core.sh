@@ -192,3 +192,4 @@ SERVICE
 enable_start bitcoind.service
 ok "Bitcoin Core started. Test: sudo -u bitcoin bitcoin-cli -datadir=${BITCOIN_DATA_DIR} getblockchaininfo"
 set_state bitcoin.installed
+#ok tested
