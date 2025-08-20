@@ -20,7 +20,8 @@ while true; do
 Bitcoin: sudo -u bitcoin bitcoin-cli -datadir=/var/lib/bitcoind getblockchaininfo
 LND:     lncli getinfo
 Electrs: journalctl -u electrs -f
-ThunderHub: http://<host>:$THUNDERHUB_PORT
+ThunderHub (Nginx): http://<host>:${NGINX_TH_PORT:-8080}
+ThunderHub (app loopback): http://127.0.0.1:${THUNDERHUB_PORT:-3010}
 Mempool:    http://<host>:$MEMPOOL_BACKEND_PORT
 Troubleshooting: see docs/troubleshooting.md
 " 15 72 ;;
