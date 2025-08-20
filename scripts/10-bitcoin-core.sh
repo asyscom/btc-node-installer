@@ -129,33 +129,37 @@ fi
 chown -R bitcoin:bitcoin /etc/bitcoin
 
 # -----------------------------
-# ACL helper (consente a lnd di leggere il .cookie)
+# ACL helper (consente al gruppo 'bitcoin' di leggere il .cookie)
 # -----------------------------
 # Dipendenza
 if ! command -v setfacl >/dev/null 2>&1; then
   apt-get update -y && apt-get install -y acl
 fi
 
-sudo tee /usr/local/bin/btc-cookie-acl.sh >/dev/null <<'SH'
+tee /usr/local/bin/btc-cookie-acl.sh >/dev/null <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 COOKIE="/data/bitcoin/.cookie"
 
-# Attendi fino a 60s che nasca il cookie, poi applica ACL
-for i in $(seq 1 60); do
+# Prepara traversal sulle directory SUBITO (anche se il cookie non c'è ancora)
+# Lo diamo al gruppo 'bitcoin' perché esiste già (lnd verrà aggiunto a questo gruppo dallo script 20)
+setfacl -m g:bitcoin:rx /data /data/bitcoin || true
+setfacl -d -m g:bitcoin:rx /data/bitcoin    || true
+
+# Attendi fino a 180s che nasca il cookie, poi applica ACL di lettura al gruppo
+for i in $(seq 1 180); do
   if [ -f "$COOKIE" ]; then
-    # Directory traversal (anche default per nuovi file/dir)
-    setfacl -m u:lnd:rx /data /data/bitcoin || true
-    setfacl -d -m u:lnd:rx /data/bitcoin   || true
-    # Lettura del cookie per l'utente lnd
-    setfacl -m u:lnd:r "$COOKIE" || true
+    chgrp bitcoin "$COOKIE"            || true
+    chmod 640 "$COOKIE"                || true
+    setfacl -m g:bitcoin:r "$COOKIE"   || true
     exit 0
   fi
   sleep 1
 done
+echo "btc-cookie-acl.sh: cookie non trovato entro 180s" >&2
 exit 1
 SH
-sudo chmod +x /usr/local/bin/btc-cookie-acl.sh
+chmod +x /usr/local/bin/btc-cookie-acl.sh
 
 # -----------------------------
 # systemd unit
@@ -188,4 +192,3 @@ SERVICE
 enable_start bitcoind.service
 ok "Bitcoin Core started. Test: sudo -u bitcoin bitcoin-cli -datadir=${BITCOIN_DATA_DIR} getblockchaininfo"
 set_state bitcoin.installed
-

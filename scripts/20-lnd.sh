@@ -33,6 +33,9 @@ mkdir -p "${LND_DATA_DIR}" "/home/${LND_USER}"
 chown -R "${LND_USER}:${LND_USER}" "${LND_DATA_DIR}" "/home/${LND_USER}"
 chmod 750 "${LND_DATA_DIR}" "/home/${LND_USER}"
 
+# Aggiungi lnd al gruppo 'bitcoin' così eredita l'ACL sul cookie
+usermod -aG bitcoin "${LND_USER}" || true
+
 # -----------------------------
 # Download & install LND + lncli
 # -----------------------------
@@ -141,7 +144,8 @@ Type=simple
 User=lnd
 #Group=${LND_USER}
 Group=lnd
-ExecStartPre=/bin/bash -c 'for i in {1..60}; do [ -r /data/bitcoin/.cookie ] && exit 0; sleep 1; done; echo "Cookie not readable"; exit 1'
+#ExecStartPre=/bin/bash -c 'for i in {1..60}; do [ -r /data/bitcoin/.cookie ] && exit 0; sleep 1; done; echo "Cookie not readable"; exit 1'
+ExecStartPre=/bin/bash -c 'for i in {1..180}; do [ -r /data/bitcoin/.cookie ] && exit 0; sleep 1; done; echo "Cookie not readable by lnd"; exit 1'
 #ExecStart=/usr/local/bin/lnd --lnddir=${LND_DATA_DIR} --configfile=${LND_CONF}
 ExecStart=/usr/local/bin/lnd --lnddir=/data/lnd --configfile=/home/lnd/lnd.conf
 Restart=on-failure
