@@ -5,24 +5,29 @@ cd "$(dirname "$0")/.."
 . lib/common.sh
 require_root; load_env; ensure_state_dir
 
-# --- prompt fallback ---
+# --- prompt fallback (se common.sh non lo fornisce) ---
 if ! command -v prompt >/dev/null 2>&1; then
   prompt() {
     local q="$1"; local def="${2:-}"; local ans
-    if [[ -n "$def" ]]; then read -rp "${q} [${def}]: " ans; printf '%s\n' "${ans:-$def}"
-    else read -rp "${q}: " ans; printf '%s\n' "${ans}"; fi
+    if [[ -n "$def" ]]; then
+      read -rp "${q} [${def}]: " ans
+      printf '%s\n' "${ans:-$def}"
+    else
+      read -rp "${q}: " ans
+      printf '%s\n' "${ans}"
+    fi
   }
 fi
 
 # -----------------------------
 # Defaults
 # -----------------------------
-: "${BITCOIN_VERSION:?}"                  # impostalo in .env
+: "${BITCOIN_VERSION:?}"                 # imposta in .env (es. 29.0)
 : "${BITCOIN_DATA_DIR:=/data/bitcoin}"
 : "${BITCOIN_RPC_PORT:=8332}"
 : "${ZMQ_RAWBLOCK:=28332}"
 : "${ZMQ_RAWTX:=28333}"
-: "${NETWORK:=mainnet}"                   # mainnet|testnet|signet|regtest
+: "${NETWORK:=mainnet}"                  # mainnet|testnet|signet|regtest
 
 # -----------------------------
 # Prune choice
@@ -36,9 +41,16 @@ if [[ -z "${USE_PRUNE:-}" ]]; then
     PRUNE_GB=""
   fi
 fi
-case "${USE_PRUNE,,}" in y|yes|true|1) USE_PRUNE=true;; *) USE_PRUNE=false;; esac
+
+case "${USE_PRUNE,,}" in
+  y|yes|true|1) USE_PRUNE=true ;;
+  *)            USE_PRUNE=false ;;
+esac
+
 if [[ "${USE_PRUNE}" == "true" ]]; then
-  [[ -z "${PRUNE_GB}" || ! "${PRUNE_GB}" =~ ^[0-9]+$ ]] && PRUNE_GB=100
+  if [[ -z "${PRUNE_GB:-}" || ! "${PRUNE_GB}" =~ ^[0-9]+$ ]]; then
+    PRUNE_GB=100
+  fi
   PRUNE_MIB="$(( PRUNE_GB * 1024 ))"
   (( PRUNE_MIB < 550 )) && PRUNE_MIB=550
 fi
@@ -62,7 +74,7 @@ install -m 0755 -o root -g root bitcoin-*/bin/* /usr/local/bin/
 rm -rf "bitcoin-${BITCOIN_VERSION}-x86_64-linux-gnu.tar.gz" bitcoin-*
 
 # -----------------------------
-# bitcoin.conf (cookie auth)
+# bitcoin.conf (RPC cookie)
 # -----------------------------
 log "Writing /etc/bitcoin/bitcoin.conf"
 cat > /etc/bitcoin/bitcoin.conf <<CONF
@@ -82,12 +94,6 @@ coinstatsindex=1
 listen=1
 bind=127.0.0.1
 
-# Tor/I2P (se lo abiliti da altro modulo, aggiungeremo le opzioni lì)
-listenonion=1
-proxy=127.0.0.1:9050
-onion=127.0.0.1:9050
-torcontrol=127.0.0.1:9051
-
 # RPC (cookie)
 rpcallowip=127.0.0.1
 rpcport=${BITCOIN_RPC_PORT}
@@ -102,9 +108,9 @@ blocksonly=1
 CONF
 
 case "${NETWORK}" in
-  testnet) echo "testnet=1" >> /etc/bitcoin/bitcoin.conf ;;
-  signet)  echo "signet=1"  >> /etc/bitcoin/bitcoin.conf ;;
-  regtest) echo "regtest=1" >> /etc/bitcoin/bitcoin.conf ;;
+  testnet) echo "testnet=1"  >> /etc/bitcoin/bitcoin.conf ;;
+  signet)  echo "signet=1"   >> /etc/bitcoin/bitcoin.conf ;;
+  regtest) echo "regtest=1"  >> /etc/bitcoin/bitcoin.conf ;;
   mainnet|"") : ;;
   *) warn "Unknown NETWORK='${NETWORK}', using mainnet." ;;
 esac
@@ -123,29 +129,30 @@ fi
 chown -R bitcoin:bitcoin /etc/bitcoin
 
 # -----------------------------
-# Helper: grant cookie to group
+# ACL helper (consente a lnd di leggere il .cookie)
 # -----------------------------
-cat > /usr/local/bin/btc-cookie-acl.sh <<'SH'
-#!/bin/sh
-set -eu
-COOKIE="/data/bitcoin/.cookie"
-
-# garantisci traversal dir (via ACL se disponibile, altrimenti permessi minimi)
-if command -v setfacl >/dev/null 2>&1; then
-  setfacl -m g:bitcoin:x /data 2>/dev/null || true
-  setfacl -m g:bitcoin:x /data/bitcoin 2>/dev/null || true
-else
-  chmod g+x /data /data/bitcoin 2>/dev/null || true
+# Dipendenza
+if ! command -v setfacl >/dev/null 2>&1; then
+  apt-get update -y && apt-get install -y acl
 fi
 
-# attendi cookie e poi assegna lettura al gruppo bitcoin
-for i in $(seq 1 60); do
-  if [ -f "$COOKIE" ]; then
-    chgrp bitcoin "$COOKIE" 2>/dev/null || true
-    chmod 640 "$COOKIE" 2>/dev/null || true
-    if command -v setfacl >/dev/null 2>&1; then
-      setfacl -m g:bitcoin:r "$COOKIE" 2>/dev/null || true
-    fi
+# Script helper
+cat > /usr/local/bin/btc-cookie-acl.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+COOKIE="/data/bitcoin/.cookie"
+
+# Garantisci traversal (exec) sulle directory per l'utente lnd
+setfacl -m u:lnd:rx /data       2>/dev/null || true
+setfacl -m u:lnd:rx /data/bitcoin 2>/dev/null || true
+# Ereditarietà per futuri file nella dir
+setfacl -d -m u:lnd:rx /data/bitcoin 2>/dev/null || true
+
+# Attendi la creazione del cookie e assegna read a lnd
+for _ in $(seq 1 60); do
+  if [[ -f "$COOKIE" ]]; then
+    setfacl -m u:lnd:r "$COOKIE" 2>/dev/null || true
     exit 0
   fi
   sleep 1
@@ -153,33 +160,6 @@ done
 exit 1
 SH
 chmod +x /usr/local/bin/btc-cookie-acl.sh
-
-# --- Allow lnd to read the RPC cookie (ACL helper) ---
-# ensure setfacl is available
-if ! command -v setfacl >/dev/null 2>&1; then
-  apt-get update -y && apt-get install -y acl
-fi
-
-# helper script called by ExecStartPost (waits for cookie then applies ACLs)
-install -m 0755 -o root -g root /dev/stdin /usr/local/bin/btc-cookie-acl.sh <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-COOKIE="/data/bitcoin/.cookie"
-# wait up to 60s for cookie creation
-for i in $(seq 1 60); do
-  if [ -f "$COOKIE" ]; then
-    # directory traverse + future inheritance
-    setfacl -m u:lnd:rx /data/bitcoin || true
-    setfacl -d -m u:lnd:rx /data/bitcoin || true
-    # read permission on the cookie itself
-    setfacl -m u:lnd:r "$COOKIE" || true
-    exit 0
-  fi
-  sleep 1
-done
-exit 1
-SH
-
 
 # -----------------------------
 # systemd unit

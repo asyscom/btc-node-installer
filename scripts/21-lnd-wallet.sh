@@ -29,7 +29,8 @@ fetch_ephemeral_tls() {
   need_pkg openssl
   rm -f "${EPHEMERAL_TLS}"
   local tries=30
-  for _i in $(seq 1 "${tries}"); do
+  for _ in $(seq 1 "${tries}"); do
+    # Prende la chain presentata dal WalletUnlocker su 10009
     openssl s_client -connect "${LND_RPC_ADDR}" -servername localhost -showcerts </dev/null 2>/dev/null \
       | sed -n '/BEGIN CERTIFICATE/,/END CERTIFICATE/p' > "${EPHEMERAL_TLS}" || true
     if [[ -s "${EPHEMERAL_TLS}" ]]; then
@@ -72,6 +73,7 @@ enable_autounlock() {
   chmod 600 "${PWD_FILE}"
   ok "Saved auto-unlock password to ${PWD_FILE}"
 
+  # Drop-in override (più robusto di editare ExecStart in place)
   mkdir -p /etc/systemd/system/lnd.service.d
   cat > /etc/systemd/system/lnd.service.d/override.conf <<EOF
 [Service]
@@ -94,6 +96,7 @@ EOF
 # -----------------------------
 # Flow
 # -----------------------------
+# Assicura che lnd sia avviato (WalletUnlocker)
 systemctl start lnd || true
 
 echo

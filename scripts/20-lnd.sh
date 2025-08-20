@@ -10,11 +10,11 @@ require_root; load_env; ensure_state_dir
 # -----------------------------
 : "${LND_VERSION:=v0.19.2-beta}"
 : "${LND_USER:=lnd}"
-: "${LND_DATA_DIR:=/data/lnd}"           # dati + TLS
-: "${LND_CONF:=/home/lnd/lnd.conf}"      # config nella HOME di lnd
-: "${BITCOIN_DATA_DIR:=/data/bitcoin}"   # per cookie path
+: "${LND_DATA_DIR:=/data/lnd}"            # dati + TLS
+: "${LND_CONF:=/home/lnd/lnd.conf}"       # config nella HOME di lnd
+: "${BITCOIN_DATA_DIR:=/data/bitcoin}"    # cookie path
 : "${BITCOIN_RPC_PORT:=8332}"
-: "${NETWORK:=mainnet}"                  # mainnet|testnet|signet|regtest
+: "${NETWORK:=mainnet}"                   # mainnet|testnet|signet|regtest
 : "${ZMQ_RAWBLOCK:=28332}"
 : "${ZMQ_RAWTX:=28333}"
 
