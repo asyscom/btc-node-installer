@@ -13,7 +13,6 @@ LND_DATA_DIR="${LND_DATA_DIR:-/data/lnd}"
 LND_CONF="${LND_CONF:-/home/lnd/lnd.conf}"
 LND_RPC_ADDR="127.0.0.1:10009"
 LNCLI="/usr/local/bin/lncli"
-UNIT_FILE="/etc/systemd/system/lnd.service"
 
 EPHEMERAL_TLS="${LND_DATA_DIR}/tls.walletunlocker.pem"   # cert effimero per lncli create
 FINAL_TLS="${LND_DATA_DIR}/tls.cert"                      # cert definitivo dopo il wallet
@@ -31,7 +30,6 @@ fetch_ephemeral_tls() {
   rm -f "${EPHEMERAL_TLS}"
   local tries=30
   for _i in $(seq 1 "${tries}"); do
-    # prendi la chain presentata dal WalletUnlocker
     openssl s_client -connect "${LND_RPC_ADDR}" -servername localhost -showcerts </dev/null 2>/dev/null \
       | sed -n '/BEGIN CERTIFICATE/,/END CERTIFICATE/p' > "${EPHEMERAL_TLS}" || true
     if [[ -s "${EPHEMERAL_TLS}" ]]; then
@@ -74,7 +72,6 @@ enable_autounlock() {
   chmod 600 "${PWD_FILE}"
   ok "Saved auto-unlock password to ${PWD_FILE}"
 
-  # drop-in override (più robusto di sed su ExecStart)
   mkdir -p /etc/systemd/system/lnd.service.d
   cat > /etc/systemd/system/lnd.service.d/override.conf <<EOF
 [Service]
@@ -97,7 +94,6 @@ EOF
 # -----------------------------
 # Flow
 # -----------------------------
-# Assicura che lnd sia avviato (WalletUnlocker)
 systemctl start lnd || true
 
 echo
@@ -107,7 +103,7 @@ echo "  2) RESTORE wallet from existing 24-word seed (interactive)"
 read -rp "Selection (1/2) [1]: " choice
 choice="${choice:-1}"
 
-# 1) PREPARA CERT EFFIMERO E LANCIA lncli create
+# 1) CERT EFFIMERO → lncli create
 if ! fetch_ephemeral_tls; then
   warn "[!] Ephemeral TLS not ready; restarting lnd and retrying…"
   systemctl restart lnd || true
@@ -144,7 +140,7 @@ case "$choice" in
 esac
 set -e
 
-# 2) RIAVVIA LND, ATTENDI CERT DEFINITIVO, PROVA getinfo
+# 2) RIAVVIA → TLS definitivo → getinfo
 echo "[i] Restarting lnd to write final TLS/macaroon…"
 systemctl restart lnd || true
 if ! wait_for_final_tls; then
@@ -161,7 +157,7 @@ sudo -u "${LND_USER}" "${LNCLI}" \
 
 ok "Wallet created/restored successfully."
 
-# 3) (OPZIONALE) AUTO-UNLOCK DOPO LA CREAZIONE
+# 3) AUTO-UNLOCK (opzionale)
 echo
 read -rp "Enable AUTO-UNLOCK at boot now? [y/N]: " au
 case "${au,,}" in

@@ -13,6 +13,7 @@ require_root; load_env; ensure_state_dir
 : "${LND_DATA_DIR:=/data/lnd}"           # dati + TLS
 : "${LND_CONF:=/home/lnd/lnd.conf}"      # config nella HOME di lnd
 : "${BITCOIN_DATA_DIR:=/data/bitcoin}"   # per cookie path
+: "${BITCOIN_RPC_PORT:=8332}"
 : "${NETWORK:=mainnet}"                  # mainnet|testnet|signet|regtest
 : "${ZMQ_RAWBLOCK:=28332}"
 : "${ZMQ_RAWTX:=28333}"
@@ -50,10 +51,10 @@ popd >/dev/null
 # -----------------------------
 case "${NETWORK}" in
   mainnet|"") NETFLAG="bitcoin.mainnet=true" ;;
-  testnet)     NETFLAG="bitcoin.testnet=true" ;;
-  signet)      NETFLAG="bitcoin.signet=true" ;;
-  regtest)     NETFLAG="bitcoin.regtest=true" ;;
-  *)           NETFLAG="bitcoin.mainnet=true"; warn "Unknown NETWORK='${NETWORK}', defaulting to mainnet" ;;
+  testnet)    NETFLAG="bitcoin.testnet=true" ;;
+  signet)     NETFLAG="bitcoin.signet=true" ;;
+  regtest)    NETFLAG="bitcoin.regtest=true" ;;
+  *)          NETFLAG="bitcoin.mainnet=true"; warn "Unknown NETWORK='${NETWORK}', defaulting to mainnet" ;;
 esac
 
 cat > "${LND_CONF}" <<CONF
@@ -104,7 +105,7 @@ ${NETFLAG}
 
 [Bitcoind]
 bitcoind.rpchost=127.0.0.1:${BITCOIN_RPC_PORT}
-bitcoind.rpccookie=/data/bitcoin/.cookie
+bitcoind.rpccookie=${BITCOIN_DATA_DIR}/.cookie
 bitcoind.zmqpubrawblock=tcp://127.0.0.1:${ZMQ_RAWBLOCK}
 bitcoind.zmqpubrawtx=tcp://127.0.0.1:${ZMQ_RAWTX}
 CONF
