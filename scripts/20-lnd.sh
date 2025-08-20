@@ -66,7 +66,7 @@ alias=your node name
 color=#ff9900
 lnddir=${LND_DATA_DIR}
 rpclisten=127.0.0.1:10009
-restlisten=127.0.0.1:8080
+restlisten=127.0.0.1:9911
 listen=0.0.0.0:9735
 debuglevel=info
 
