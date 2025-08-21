@@ -93,6 +93,7 @@ coinstatsindex=1
 # Networking
 listen=1
 bind=127.0.0.1
+bind=127.0.0.1=onion
 
 # RPC (cookie)
 rpcallowip=127.0.0.1
