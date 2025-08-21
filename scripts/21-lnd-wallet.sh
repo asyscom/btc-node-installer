@@ -89,6 +89,7 @@ EOF
     --lnddir="${LND_DATA_DIR}" \
     --rpcserver="${LND_RPC_ADDR}" \
     --tlscertpath="${FINAL_TLS}" \
+    --macaroonpath="${LND_DATA_DIR}/data/chain/bitcoin/${NETWORK:-mainnet}/admin.macaroon" \
     getinfo || true
   ok "Auto-unlock enabled."
 }
@@ -156,6 +157,7 @@ sudo -u "${LND_USER}" "${LNCLI}" \
   --lnddir="${LND_DATA_DIR}" \
   --rpcserver="${LND_RPC_ADDR}" \
   --tlscertpath="${FINAL_TLS}" \
+  --macaroonpath="${LND_DATA_DIR}/data/chain/bitcoin/${NETWORK:-mainnet}/admin.macaroon" \
   getinfo || true
 
 ok "Wallet created/restored successfully."
