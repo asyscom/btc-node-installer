@@ -52,35 +52,49 @@ ALIAS
 chmod 0644 /etc/profile.d/btc-aliases.sh
 
 # -----------------------------------------------------------------------------
-# Optional: Tor
+# Optional: Tor (single-file config in /etc/tor/torrc)
 # -----------------------------------------------------------------------------
 if confirm "Install Tor for privacy (recommended)?"; then
   pkg_install tor
 
-  # Ensure ControlPort for apps (Bitcoin/LND/Electrs/ThunderHub) + group perms
-  if ! grep -q '^ControlPort 9051' /etc/tor/torrc; then
+  # Scrivi (o aggiorna) le opzioni fondamentali nel torrc principale
+  # - niente %include o torrc.d
+  # - ControlPort + cookie leggibile dal gruppo
+  # - SOCKS5 9050
+  if ! grep -q '^# --- btc-node-installer TOR BASE ---' /etc/tor/torrc 2>/dev/null; then
     cat >> /etc/tor/torrc <<'TOR'
-# --- Added by btc-node-installer ---
-# ControlPort for local apps to manage/create onion services
+# --- btc-node-installer TOR BASE ---
+# Porta di controllo per app locali (LND, ecc.)
 ControlPort 9051
 CookieAuthentication 1
+CookieAuthFile /run/tor/control.authcookie
 CookieAuthFileGroupReadable 1
 
-# SOCKS5 proxy (9050 is default; keep explicit for clarity)
+# Proxy SOCKS locale
 SocksPort 9050
+# --- end btc-node-installer TOR BASE ---
 TOR
   fi
 
-  # Allow service users to read Tor cookie
+  # Consenti a service user di leggere il cookie di Tor
   id -u bitcoin >/dev/null 2>&1 && usermod -aG debian-tor bitcoin || true
   id -u lnd >/dev/null 2>&1 && usermod -aG debian-tor lnd || true
 
-  systemctl enable --now tor || true
-  systemctl restart tor || true
+  # Assicurati che il file esista con i permessi giusti dopo l'avvio
+  # (Tor lo crea sotto /run/tor/ con il gruppo debian-tor e g+r grazie alla direttiva sopra)
+  systemctl enable --now tor@default.service || true
+  systemctl restart tor@default.service || true
+
+  # Verifica rapida
+  if ! ss -ltn | grep -q ':9051'; then
+    warn "Tor ControlPort 9051 non ancora in ascolto; controlla i log: journalctl -u tor@default -e"
+  fi
 
   set_state tor.enabled
-  ok "Tor installed & ControlPort 9051 configured"
+  ok "Tor installed & ControlPort 9051 configured (tor@default.service)"
 fi
+
+
 # -----------------------------------------------------------------------------
 # UFW (firewall)
 # -----------------------------------------------------------------------------
