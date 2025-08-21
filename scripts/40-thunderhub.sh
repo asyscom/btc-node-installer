@@ -199,32 +199,30 @@ fi
 
 # ---- Tor Onion (HiddenService) → Nginx ----
 ONION_DIR="/var/lib/tor/thunderhub"
-TOR_DROPIN="/etc/tor/torrc.d/thunderhub.conf"
 
 # install tor se manca
 if ! command -v tor >/dev/null 2>&1; then
-  case "$pkg_mgr" in
-    apt) apt-get install -y tor ;;
-    dnf|yum) pkg_install tor ;;
-  esac
+  case "$pkg_mgr" in
+    apt) apt-get install -y tor ;;
+    dnf|yum) pkg_install tor ;;
+  esac
 fi
 
-mkdir -p /etc/tor/torrc.d
-cat > "${TOR_DROPIN}" <<TOR
+# Aggiungi la configurazione di Hidden Service direttamente al file torrc
+# La configurazione viene aggiunta solo se non esiste già
+if ! grep -q "HiddenServiceDir ${ONION_DIR}" /etc/tor/torrc; then
+  cat >> /etc/tor/torrc <<TOR
+# ThunderHub Onion Service
 HiddenServiceDir ${ONION_DIR}
 HiddenServiceVersion 3
 HiddenServicePort 80 127.0.0.1:${NGINX_TH_PORT}
 TOR
+fi
 
-# Crea e proteggi la dir HS (necessaria per hostname/keys)
+# Crea e proteggi la directory HS (necessaria per hostname/keys)
 mkdir -p "${ONION_DIR}"
 chown -R debian-tor:debian-tor "${ONION_DIR}"
 chmod 0700 "${ONION_DIR}"
-
-# attiva include dei drop-in se non già presente
-if ! grep -q "^%include /etc/tor/torrc.d/\*$" /etc/tor/torrc 2>/dev/null; then
-  echo "%include /etc/tor/torrc.d/*" >> /etc/tor/torrc
-fi
 
 # avvia tor (supporta sia 'tor' che 'tor@default')
 (systemctl enable --now tor || systemctl enable --now tor@default) || true
@@ -257,4 +255,8 @@ echo "Login password (master): ${TH_MASTER_PASSWORD}"
 echo "Account: local-lnd"
 
 set_state thunderhub.installed
-
+# ---- Pausa finale per l'utente ----
+echo ""
+echo "Please take note of the information above."
+echo "Press any key to return to the main menu..."
+read -n 1 -s
