@@ -107,6 +107,25 @@ dbcache=2048
 blocksonly=1
 CONF
 
+# --- Tor autodetect & config ---
+TOR_OK=false
+if ss -ltn 2>/dev/null | grep -q ':9050' && ss -ltn 2>/dev/null | grep -q ':9051'; then
+  TOR_OK=true
+fi
+
+if $TOR_OK; then
+  cat >> /etc/bitcoin/bitcoin.conf <<'CONF_TOR'
+# Tor settings (autoconfig by installer)
+proxy=127.0.0.1:9050
+onlynet=onion
+listenonion=1
+torcontrol=127.0.0.1:9051
+CONF_TOR
+  ok "Tor rilevato: Bitcoin userà solo onion (proxy 9050) e creerà l'indirizzo onion (torcontrol 9051)."
+else
+  warn "Tor non rilevato: Bitcoin userà rete clearnet locale (solo loopback)."
+fi
+
 case "${NETWORK}" in
   testnet) echo "testnet=1"  >> /etc/bitcoin/bitcoin.conf ;;
   signet)  echo "signet=1"   >> /etc/bitcoin/bitcoin.conf ;;
