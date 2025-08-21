@@ -35,6 +35,8 @@ chmod 750 "${LND_DATA_DIR}" "/home/${LND_USER}"
 
 # Aggiungi lnd al gruppo 'bitcoin' così eredita l'ACL sul cookie
 usermod -aG bitcoin "${LND_USER}" || true
+# Necessario per usare il ControlPort/Cookie di Tor
+usermod -aG debian-tor "${LND_USER}" || true
 
 # -----------------------------
 # Download & install LND + lncli
@@ -67,7 +69,7 @@ color=#ff9900
 lnddir=${LND_DATA_DIR}
 rpclisten=127.0.0.1:10009
 restlisten=127.0.0.1:9911
-listen=0.0.0.0:9735
+listen=127.0.0.1:9735
 debuglevel=info
 
 # TLS persistente utile per lncli/localhost
@@ -113,6 +115,7 @@ bitcoind.zmqpubrawblock=tcp://127.0.0.1:${ZMQ_RAWBLOCK}
 bitcoind.zmqpubrawtx=tcp://127.0.0.1:${ZMQ_RAWTX}
 CONF
 
+
 # Tor (se abilitato)
 if has_state tor.enabled; then
   cat >> "${LND_CONF}" <<'CONF'
@@ -122,13 +125,18 @@ tor.v3=true
 tor.socks=127.0.0.1:9050
 tor.control=127.0.0.1:9051
 tor.streamisolation=true
+tor.cookiefile=/var/run/tor/control.authcookie
+tor.privatekeypath=/data/lnd/tor
 CONF
+
   usermod -aG debian-tor "${LND_USER}" || true
+  mkdir -p /data/lnd/tor
+  chown -R "${LND_USER}:${LND_USER}" /data/lnd/tor
+  chmod 700 /data/lnd/tor
 fi
 
 chown "${LND_USER}:${LND_USER}" "${LND_CONF}"
 chmod 640 "${LND_CONF}"
-
 # -----------------------------
 # systemd unit (no auto-unlock qui; lo offre 21-lnd-wallet)
 # -----------------------------
@@ -144,9 +152,8 @@ Type=simple
 User=lnd
 #Group=${LND_USER}
 Group=lnd
-#ExecStartPre=/bin/bash -c 'for i in {1..60}; do [ -r /data/bitcoin/.cookie ] && exit 0; sleep 1; done; echo "Cookie not readable"; exit 1'
 ExecStartPre=/bin/bash -c 'for i in {1..180}; do [ -r /data/bitcoin/.cookie ] && exit 0; sleep 1; done; echo "Cookie not readable by lnd"; exit 1'
-#ExecStart=/usr/local/bin/lnd --lnddir=${LND_DATA_DIR} --configfile=${LND_CONF}
+ExecStartPre=/bin/bash -c 'for i in {1..60}; do (echo -e "PROTOCOLINFO\r\nQUIT\r\n" | timeout 1 nc 127.0.0.1 9051 >/dev/null 2>&1) && exit 0; sleep 1; done; echo "Tor ControlPort 9051 not reachable" >&2; exit 1'
 ExecStart=/usr/local/bin/lnd --lnddir=/data/lnd --configfile=/home/lnd/lnd.conf
 Restart=on-failure
 RestartSec=5
