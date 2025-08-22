@@ -2,38 +2,45 @@
 set -Eeuo pipefail
 cd "$(dirname "$0")/.."
 . lib/common.sh
+
 require_root; load_env; ensure_state_dir; detect_pkg_mgr
 
-# Porta pubblica (esterna) - default 4080 se non settata in env
-MEMPOOL_PUBLIC_PORT="${MEMPOOL_PUBLIC_PORT:-4080}"
+# --- Porte e variabili default ---------------------------------------------
+MEMPOOL_PUBLIC_PORT="${MEMPOOL_PUBLIC_PORT:-4080}"    # porta esterna (Nginx)
+MEMPOOL_BACKEND_PORT="${MEMPOOL_BACKEND_PORT:-8999}"  # backend mempool
+BITCOIN_DATA_DIR="${BITCOIN_DATA_DIR:-/data/bitcoin}"
+BITCOIN_RPC_PORT="${BITCOIN_RPC_PORT:-8332}"
+ELECTRS_HOST="${ELECTRS_HOST:-127.0.0.1}"
+ELECTRS_PORT="${ELECTRS_PORT:-50001}"
 
-if has_state mempool.installed; then ok "Mempool already installed"; exit 0; fi
+# Se già installato, esci
+if has_state mempool.installed; then
+  ok "Mempool already installed"
+  # Mostra comunque il riepilogo e rientra al menu
+  echo
+  echo "Premi un tasto per tornare al menu..."
+  read -n 1 -s
+  exit 0
+fi
 
-detect_pkg_mgr; pkg_update
+pkg_update
 
-# Dipendenze
+# --- Dipendenze ------------------------------------------------------------
 case "$pkg_mgr" in
   apt)
-    pkg_install git mariadb-server redis-server curl ca-certificates nginx
+    pkg_install git mariadb-server redis-server curl ca-certificates nginx acl
     ;;
   dnf|yum)
-    pkg_install git mariadb-server redis curl ca-certificates nginx
+    pkg_install git mariadb-server redis curl ca-certificates nginx acl
     ;;
 esac
 
 # Servizi DB/Redis/Nginx
 systemctl enable --now mariadb || true
-systemctl enable --now redis || systemctl enable --now redis-server || true
+systemctl enable --now redis-server || systemctl enable --now redis || true
 systemctl enable --now nginx || true
 
-# DB setup (semplice)
-DB_PASS="$(openssl rand -hex 16)"
-mysql -uroot -e "CREATE DATABASE IF NOT EXISTS mempool CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-mysql -uroot -e "CREATE USER IF NOT EXISTS 'mempool'@'localhost' IDENTIFIED BY '${DB_PASS}';"
-mysql -uroot -e "GRANT ALL PRIVILEGES ON mempool.* TO 'mempool'@'localhost'; FLUSH PRIVILEGES;"
-ok "Created DB 'mempool' and user 'mempool' (random password)."
-
-# Node.js LTS
+# --- Node.js LTS se manca ---------------------------------------------------
 if ! command -v node >/dev/null 2>&1; then
   case "$pkg_mgr" in
     apt)
@@ -46,22 +53,44 @@ if ! command -v node >/dev/null 2>&1; then
   esac
 fi
 
-# utente e percorsi
+# --- Utente e dir -----------------------------------------------------------
 ensure_user mempool
 mkdir -p /opt/mempool /etc/mempool
 chown -R mempool:mempool /opt/mempool /etc/mempool
 
-# codice sorgente (repo root in /opt/mempool/mempool) - eseguito come utente mempool
-( cd / && {
-    if [[ ! -d /opt/mempool/mempool/.git ]]; then
-      rm -rf /opt/mempool/mempool 2>/dev/null || true
-      sudo -u mempool -H git clone https://github.com/mempool/mempool.git /opt/mempool/mempool
-    fi
-    sudo -u mempool -H git -C /opt/mempool/mempool submodule update --init --recursive
-    sudo -u mempool -H git config --global --add safe.directory /opt/mempool/mempool || true
-})
+# --- Database ---------------------------------------------------------------
+# Password random per l’utente db (la mostriamo nel summary)
+DB_PASS="$(openssl rand -hex 16)"
 
-# Config backend (API bind su loopback)
+# Usa il client MariaDB “nativo” (via unix_socket) per evitare noie di root@localhost
+mariadb <<SQL
+CREATE DATABASE IF NOT EXISTS mempool CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE USER IF NOT EXISTS 'mempool'@'localhost'  IDENTIFIED BY '${DB_PASS}';
+CREATE USER IF NOT EXISTS 'mempool'@'127.0.0.1'  IDENTIFIED BY '${DB_PASS}';
+
+ALTER USER 'mempool'@'localhost'  IDENTIFIED VIA mysql_native_password USING PASSWORD('${DB_PASS}');
+ALTER USER 'mempool'@'127.0.0.1'  IDENTIFIED VIA mysql_native_password USING PASSWORD('${DB_PASS}');
+
+GRANT ALL PRIVILEGES ON mempool.* TO 'mempool'@'localhost';
+GRANT ALL PRIVILEGES ON mempool.* TO 'mempool'@'127.0.0.1';
+FLUSH PRIVILEGES;
+SQL
+ok "Created DB 'mempool' and users 'mempool'@'localhost' & '127.0.0.1'."
+
+# --- Codice sorgente --------------------------------------------------------
+(
+  cd /
+  if [[ ! -d /opt/mempool/mempool/.git ]]; then
+    rm -rf /opt/mempool/mempool 2>/dev/null || true
+    sudo -u mempool -H git clone https://github.com/mempool/mempool.git /opt/mempool/mempool
+  fi
+  sudo -u mempool -H git -C /opt/mempool/mempool submodule update --init --recursive
+  sudo -u mempool -H git config --global --add safe.directory /opt/mempool/mempool || true
+)
+
+# --- Config backend ---------------------------------------------------------
+# NB: Backend = electrum; Core RPC via COOKIE (no user/pass)
 install -o mempool -g mempool -m 0644 /dev/stdin /etc/mempool/mempool-config.json <<CONF
 {
   "MEMPOOL": {
@@ -76,19 +105,16 @@ install -o mempool -g mempool -m 0644 /dev/stdin /etc/mempool/mempool-config.jso
     }
   },
   "ELECTRUM": {
-    "HOST": "127.0.0.1",
-    "PORT": 50001,
-    "TLS": false
+    "HOST": "${ELECTRS_HOST}",
+    "PORT": ${ELECTRS_PORT},
+    "TLS": false,
+    "TLS_ENABLED": false
   },
   "CORE_RPC": {
     "HOST": "127.0.0.1",
     "PORT": ${BITCOIN_RPC_PORT},
-    "USERNAME": "${BITCOIN_RPC_USER}",
-    "PASSWORD": "${BITCOIN_RPC_PASSWORD}"
-  },
-  "ZMQ": {
-    "RAW_BLOCK": "tcp://127.0.0.1:${ZMQ_RAWBLOCK}",
-    "RAW_TX": "tcp://127.0.0.1:${ZMQ_RAWTX}"
+    "COOKIE": true,
+    "COOKIE_PATH": "${BITCOIN_DATA_DIR}/.cookie"
   },
   "API": {
     "ENABLED": true,
@@ -103,47 +129,41 @@ install -o mempool -g mempool -m 0644 /dev/stdin /etc/mempool/mempool-config.jso
 }
 CONF
 
-# ---------- INSTALL & BUILD DIRETTO NEI WORKSPACE ----------
-# Backend
-( cd / && sudo -u mempool -H bash -lc '
-  set -Eeuo pipefail
+# --- Backend deps (no migrations manuali: il backend le gestisce da solo) ---
+(
   cd /opt/mempool/mempool/backend
   if [[ -f package-lock.json ]]; then
-    npm ci
+    sudo -u mempool -H npm ci --omit=dev || sudo -u mempool -H npm ci
   else
-    npm install
+    sudo -u mempool -H npm install --omit=dev || sudo -u mempool -H npm install
   fi
-  npm run build
-  npm run migration:run 2>/dev/null || npx typeorm migration:run || true
-' )
+  sudo -u mempool -H npm run build || true
+)
 
-# Frontend (se presente)
-( cd / && sudo -u mempool -H bash -lc '
-  set -Eeuo pipefail
-  if [[ -f /opt/mempool/mempool/frontend/package.json ]]; then
-    cd /opt/mempool/mempool/frontend
-    if [[ -f package-lock.json ]]; then
-      npm ci
-    else
-      npm install
-    fi
-    npm run build || true
-  fi
-' )
+# --- ACL per il cookie di bitcoind -----------------------------------------
+# Concedi a 'mempool' traversal + lettura del file cookie
+install -d -m 0755 /data
+install -d -m 0750 "${BITCOIN_DATA_DIR}"
+setfacl -m u:mempool:rx /data || true
+setfacl -m u:mempool:rx "${BITCOIN_DATA_DIR}" || true
+[[ -f "${BITCOIN_DATA_DIR}/.cookie" ]] && setfacl -m u:mempool:r "${BITCOIN_DATA_DIR}/.cookie" || true
 
-# systemd (punta direttamente a backend)
-cat > /etc/systemd/system/mempool-backend.service <<'SERVICE'
+# --- systemd (backend) ------------------------------------------------------
+cat > /etc/systemd/system/mempool-backend.service <<SERVICE
 [Unit]
 Description=Mempool Backend (API + static)
-After=network.target mariadb.service redis.service bitcoind.service
-Requires=mariadb.service redis.service bitcoind.service
+After=network.target mariadb.service redis-server.service bitcoind.service electrs.service
+Requires=mariadb.service redis-server.service bitcoind.service
+Wants=electrs.service
 
 [Service]
 User=mempool
 Group=mempool
 WorkingDirectory=/opt/mempool/mempool/backend
 Environment=MEMPOOL_CONFIG=/etc/mempool/mempool-config.json
-ExecStart=/bin/bash -lc '(npm run start:backend || npm run start || node dist/index.js)'
+# Attendi cookie + bitcoind RPC
+ExecStartPre=/bin/sh -c 'for i in \$(seq 1 60); do [ -f "${BITCOIN_DATA_DIR}/.cookie" ] && sudo -u bitcoin bitcoin-cli -conf=/etc/bitcoin/bitcoin.conf -datadir="${BITCOIN_DATA_DIR}" getblockchaininfo >/dev/null 2>&1 && exit 0; sleep 2; done; exit 0'
+ExecStart=/usr/bin/node /opt/mempool/mempool/backend/dist/index.js
 Restart=on-failure
 NoNewPrivileges=true
 PrivateTmp=true
@@ -155,23 +175,23 @@ LimitNOFILE=8192
 WantedBy=multi-user.target
 SERVICE
 
+systemctl daemon-reload
 enable_start mempool-backend.service
 
-# ---------------- NGINX reverse proxy (:${MEMPOOL_PUBLIC_PORT} -> backend) ----------------
-SERVER_NAME="${MEMPOOL_SERVER_NAME:-_}"   # opzionale: export MEMPOOL_SERVER_NAME="mempool.yourdomain.tld"
+# --- Nginx reverse proxy (:MEMPOOL_PUBLIC_PORT -> backend) ------------------
+SERVER_NAME="${MEMPOOL_SERVER_NAME:-_}"
 
 NGINX_DEBIAN_SITE="/etc/nginx/sites-available/mempool.conf"
 NGINX_DEBIAN_LINK="/etc/nginx/sites-enabled/mempool.conf"
 NGINX_RHEL_SITE="/etc/nginx/conf.d/mempool.conf"
 
 NGINX_CONF_CONTENT=$(cat <<NGX
-# Mempool reverse proxy
+# Mempool reverse proxy (locale)
 server {
     listen ${MEMPOOL_PUBLIC_PORT};
     server_name ${SERVER_NAME};
 
-    # gzip on; # abilitalo se vuoi comprimere il traffico
-
+    # proxy principale
     location / {
         proxy_pass http://127.0.0.1:${MEMPOOL_BACKEND_PORT};
         proxy_http_version 1.1;
@@ -182,6 +202,17 @@ server {
         proxy_read_timeout 300;
     }
 
+    # WebSocket (aggiornamenti live)
+    location /api/v1/ws {
+        proxy_pass http://127.0.0.1:${MEMPOOL_BACKEND_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_read_timeout 300;
+    }
+
+    # Statici (cache 7 giorni)
     location ~* \.(js|css|png|jpg|jpeg|gif|svg|ico|woff2?)\$ {
         proxy_pass http://127.0.0.1:${MEMPOOL_BACKEND_PORT};
         expires 7d;
@@ -202,7 +233,7 @@ case "$pkg_mgr" in
     ;;
 esac
 
-# SELinux (proxy da nginx a 127.0.0.1:${MEMPOOL_BACKEND_PORT})
+# SELinux (solo RHEL-like)
 if command -v getenforce >/dev/null 2>&1 && [[ "$(getenforce)" == "Enforcing" ]]; then
   command -v setsebool >/dev/null 2>&1 && setsebool -P httpd_can_network_connect 1 || true
 fi
@@ -210,7 +241,7 @@ fi
 nginx -t
 systemctl reload nginx
 
-# ---------------------- FIREWALL apertura porta pubblica ----------------------
+# --- FIREWALL ---------------------------------------------------------------
 if command -v ufw >/dev/null 2>&1; then
   ufw allow ${MEMPOOL_PUBLIC_PORT}/tcp || true
 elif command -v firewall-cmd >/dev/null 2>&1; then
@@ -224,7 +255,7 @@ else
   fi
 fi
 
-# ---------------- Tor Hidden Service per Mempool (porta pubblica) ----------------
+# --- Tor Hidden Service opzionale ------------------------------------------
 if ! command -v tor >/dev/null 2>&1; then
   case "$pkg_mgr" in
     apt)     apt-get update -y && apt-get install -y tor ;;
@@ -260,10 +291,10 @@ done
 ok "Mempool backend on 127.0.0.1:${MEMPOOL_BACKEND_PORT}. Nginx listening on 0.0.0.0:${MEMPOOL_PUBLIC_PORT}."
 set_state mempool.installed
 
-# ---------------------- SUMMARY ----------------------
+# ---------------------- SUMMARY + ritorno al menu ---------------------------
 echo
 SERVER_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
-NGINX_PATH="$( [[ $pkg_mgr == apt ]] && echo ${NGINX_DEBIAN_SITE} || echo ${NGINX_RHEL_SITE} )"
+NGINX_PATH="$( [[ $pkg_mgr == apt ]] && echo /etc/nginx/sites-available/mempool.conf || echo /etc/nginx/conf.d/mempool.conf )"
 
 ok "Summary:"
 echo "  • DB user: mempool  | DB name: mempool  | Pass: ${DB_PASS}"
@@ -273,8 +304,12 @@ echo "  • Backend:     http://127.0.0.1:${MEMPOOL_BACKEND_PORT}/"
 echo "  • Nginx conf:  ${NGINX_PATH}"
 echo "  • Tor HS dir:  ${HS_DIR}"
 if [[ -n "${MEMPOOL_ONION}" ]]; then
-  echo "  • Onion URL:   http://${MEMPOOL_ONION}/   (and http://${MEMPOOL_ONION}:${MEMPOOL_PUBLIC_PORT}/)"
+  echo "  • Onion URL:   http://${MEMPOOL_ONION}/   (anche :${MEMPOOL_PUBLIC_PORT}/)"
 else
-  echo "  • Onion URL:   pending… (Tor is creating it; check ${HS_DIR}/hostname shortly)"
+  echo "  • Onion URL:   pending… (Tor sta creando il servizio; controlla ${HS_DIR}/hostname fra poco)"
 fi
+
+echo
+echo "Premi un tasto per tornare al menu..."
+read -n 1 -s
 
