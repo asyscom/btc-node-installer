@@ -111,6 +111,8 @@ cat > /etc/systemd/system/thunderhub.service <<SERVICE
 Description=ThunderHub
 After=network.target lnd.service
 Requires=lnd.service
+BindsTo=lnd.service     # <- questa è la chiave
+PartOf=lnd.service      # <- così i comandi systemctl su lnd si propagano
 
 [Service]
 User=thunderhub
