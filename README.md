@@ -10,7 +10,6 @@ This repository provides a **modular, menu-driven installer** for a self-hosted 
 - **ThunderHub** (LND web UI)
 - **Mempool** (block explorer)
 - **Privacy** (Tor; I2P & DNS-over-Tor planned)
-- **Monitoring** (Prometheus + Grafana planned)
 
 Everything is configured under `/etc/<service>/` and stores data under `/data/<service>` by default.
 
