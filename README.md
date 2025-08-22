@@ -1,4 +1,4 @@
-# BTC Node Installer (Beta)
+# Full Bitcoin Node Stack Installer (Beta)
 
 > **Status:** Beta – expect rough edges and breaking changes. Use at your own risk.
 
