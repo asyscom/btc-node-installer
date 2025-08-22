@@ -51,3 +51,20 @@ systemctl daemon-reload
 systemctl enable --now lnd-backup.timer
 ok "Encrypted LND backup configured. Backups stored in ${BACKUP_DIR} and rotated daily."
 set_state backup.setup
+# ... (codice precedente) ...
+
+systemctl enable --now lnd-backup.timer
+ok "Encrypted LND backup configured. Backups stored in ${BACKUP_DIR} and rotated daily."
+set_state backup.setup
+
+echo "--------------------------------------------------------"
+echo "LND Encrypted Backup Configuration Complete."
+echo "An encrypted backup script has been created at: ${SCRIPT_PATH}"
+echo "Systemd services for the backup have been configured:"
+echo "- Service: lnd-backup.service"
+echo "- Timer: lnd-backup.timer (runs daily)"
+echo ""
+echo "Backups will be stored in: ${BACKUP_DIR}"
+echo "--------------------------------------------------------"
+echo ""
+read -n 1 -s -r -p "Press any key to return to the main menu..."

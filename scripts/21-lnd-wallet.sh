@@ -172,4 +172,51 @@ esac
 
 ok "LND wallet setup completed. If Bitcoin is still syncing, synced_to_chain=false is expected."
 set_state lnd.wallet.done
+# -----------------------------
+# Summary & User Guide
+# -----------------------------
 
+echo "--------------------------------------------------------"
+echo "LND WALLET SETUP COMPLETE!"
+echo ""
+echo "Your LND node is now running. It may take some time to sync with the Bitcoin chain."
+echo "You can check the sync status and other info with the 'getinfo' command."
+echo ""
+echo "--- Useful Commands ---"
+echo ""
+echo "To get node info and sync status:"
+echo "sudo -u lnd lncli getinfo"
+echo ""
+echo "To see the latest logs:"
+echo "sudo journalctl -fu lnd"
+echo ""
+echo "To check if LND is running:"
+echo "sudo systemctl status lnd.service"
+echo ""
+echo "To open a new channel (replace <pubkey> and <amount>):"
+echo "sudo -u lnd lncli openchannel --node_key=<pubkey> --local_amt=<amount>"
+echo ""
+echo "To see your wallet balance:"
+echo "sudo -u lnd lncli walletbalance"
+echo ""
+
+# Get the Onion address if Tor is enabled
+if has_state tor.enabled; then
+    log "Fetching your Tor Onion address..."
+    local ONION_ADDR
+    ONION_ADDR="$(sudo -u lnd /usr/local/bin/lncli getinfo | grep uris | grep -o 'onion.*' | head -n 1 | cut -d'"' -f1)"
+    if [[ -n "$ONION_ADDR" ]]; then
+        echo "--- Your Public Onion Address ---"
+        echo "Your node can be found on the Lightning Network via:"
+        echo "$ONION_ADDR"
+    fi
+fi
+
+# Final check to show LND is running
+echo ""
+echo "--- LND Status Check ---"
+sudo systemctl status lnd.service --no-pager || true
+
+echo ""
+echo "--------------------------------------------------------"
+read -n 1 -s -r -p "Press any key to return to the main menu..."
