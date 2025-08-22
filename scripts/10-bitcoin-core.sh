@@ -213,4 +213,44 @@ SERVICE
 enable_start bitcoind.service
 ok "Bitcoin Core started. Test: sudo -u bitcoin bitcoin-cli -datadir=${BITCOIN_DATA_DIR} getblockchaininfo"
 set_state bitcoin.installed
-#ok tested
+# -----------------------------
+# Summary & User Guide
+# -----------------------------
+
+echo "--------------------------------------------------------"
+echo "BITCOIN CORE INSTALLATION COMPLETE!"
+echo ""
+echo "Bitcoin Core is now installed and running in the background."
+echo "It will begin syncing with the blockchain, which can take several hours or even days."
+echo ""
+echo "--- Useful Commands ---"
+echo ""
+echo "To check sync status and node information:"
+echo "sudo -u bitcoin bitcoin-cli -datadir=${BITCOIN_DATA_DIR} getblockchaininfo"
+echo ""
+echo "To check the latest logs:"
+echo "sudo journalctl -fu bitcoind"
+echo ""
+echo "To stop Bitcoin Core:"
+echo "sudo systemctl stop bitcoind"
+echo ""
+echo "To restart Bitcoin Core:"
+echo "sudo systemctl restart bitcoind"
+echo ""
+
+# Get the Onion address if Tor is enabled
+if [ -s "/etc/bitcoin/bitcoin.conf" ] && grep -q "listenonion=1" "/etc/bitcoin/bitcoin.conf"; then
+    log "Fetching your Tor Onion address..."
+    ONION_ADDR="$(sudo -u bitcoin bitcoin-cli -datadir="${BITCOIN_DATA_DIR}" getnetworkinfo | grep '"address"' | grep '.onion' | cut -d '"' -f 4 || true)"
+    if [[ -n "$ONION_ADDR" ]]; then
+        echo "--- Your Public Onion Address ---"
+        echo "Your Bitcoin node can be found on the network via:"
+        echo "$ONION_ADDR"
+    else
+        warn "Could not retrieve Onion address. Your node might still be initializing it."
+    fi
+fi
+
+echo ""
+echo "--------------------------------------------------------"
+read -n 1 -s -r -p "Press any key to return to the main menu..."
