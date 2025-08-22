@@ -85,7 +85,7 @@ You can install each part independently; the menu remembers progress.
 | Component     | Service                  | Config path                    | Data dir            | Binaries                 |
 |---------------|---------------------------|--------------------------------|---------------------|--------------------------|
 | Bitcoin Core  | `bitcoind.service`        | `/etc/bitcoin/bitcoin.conf`    | `/data/bitcoin`     | `/usr/local/bin/bitcoin*`|
-| LND           | `lnd.service`             | `/etc/lnd/lnd.conf`            | `/data/lnd`         | `/usr/local/bin/lnd, lncli` |
+| LND           | `lnd.service`             | `/home/lnd/lnd.conf`            | `/data/lnd`         | `/usr/local/bin/lnd, lncli` |
 | Electrs       | `electrs.service`         | `/etc/electrs/config.toml`     | `/data/electrs`     | `/usr/local/bin/electrs` |
 | ThunderHub    | `thunderhub.service`      | `/etc/thunderhub/config.yaml`  | `/data/thunderhub`  | (via Node/npm)           |
 | Mempool       | `mempool.service`         | `/etc/mempool/*.conf`          | `/data/mempool`     | (docker/compiled)        |
