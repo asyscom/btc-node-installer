@@ -74,7 +74,7 @@ Use the menu to install components **in sequence**. A typical order:
 2. **Bitcoin Core** (choose *pruned* or *full*)
 3. **LND**
 4. (Optional) **Electrs**, **ThunderHub**, **Mempool**
-5. **Privacy (Tor)**
+7. **Privacy/Secyrity (Tor)**
 
 You can install each part independently; the menu remembers progress.
 
