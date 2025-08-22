@@ -14,9 +14,9 @@ pkg_update
 pkg_install build-essential clang cmake git rustc cargo pkg-config librocksdb-dev libssl-dev
 
 # user and dirs
-# Assumo che bitcoind giri come utente 'bitcoin' e abbia i dati in /var/lib/bitcoind
+# NOTE: bitcoind gira come 'bitcoin' e usa /data/bitcoin (vedi 10-bitcoin.sh)
 ensure_user bitcoin
-mkdir -p /var/lib/electrs /etc/electrs
+mkdir -p /var/lib/electrs /var/lib/electrs/db /etc/electrs
 chown -R bitcoin:bitcoin /var/lib/electrs /etc/electrs
 
 # build
@@ -30,11 +30,18 @@ if [[ -n "${ELECTRS_VERSION:-}" && "${ELECTRS_VERSION}" != "latest" ]]; then
   git checkout "${ELECTRS_VERSION}" || true
 fi
 cargo build --release
-
 install -m 0755 target/release/electrs /usr/local/bin/
 
+# detect network da bitcoin.conf
+NET=mainnet
+if [[ -f /etc/bitcoin/bitcoin.conf ]]; then
+  grep -q '^testnet=1' /etc/bitcoin/bitcoin.conf && NET=testnet
+  grep -q '^signet=1'  /etc/bitcoin/bitcoin.conf && NET=signet
+  grep -q '^regtest=1' /etc/bitcoin/bitcoin.conf && NET=regtest
+fi
+
 # systemd
-cat > /etc/systemd/system/electrs.service <<'SERVICE'
+cat > /etc/systemd/system/electrs.service <<SERVICE
 [Unit]
 Description=Electrs
 After=bitcoind.service network.target
@@ -43,15 +50,22 @@ Requires=bitcoind.service
 [Service]
 User=bitcoin
 Group=bitcoin
-ExecStart=/usr/local/bin/electrs -v \
-  --network=${NETWORK} \
-  --db-dir=/var/lib/electrs/db \
-  --daemon-dir=/var/lib/bitcoind \
-  --electrum-rpc-addr=0.0.0.0:50001 \
-  --cookie-file=/var/lib/bitcoind/.cookie \
+# Attendi che RPC risponda e che il cookie esista (gira come User=bitcoin, niente sudo)
+ExecStartPre=/bin/sh -c 'for i in \$(seq 1 60); do [ -f /data/bitcoin/.cookie ] && /usr/local/bin/bitcoin-cli -conf=/etc/bitcoin/bitcoin.conf -datadir=/data/bitcoin getblockchaininfo >/dev/null 2>&1 && exit 0; sleep 2; done; exit 1'
+ExecStart=/usr/local/bin/electrs \\
+  --log-filters=INFO \\
+  --network=${NET} \\
+  --db-dir=/var/lib/electrs/db \\
+  --daemon-dir=/data/bitcoin \\
+  --daemon-rpc-addr=127.0.0.1:8332 \\
+  --electrum-rpc-addr=0.0.0.0:50001 \\
+  --cookie-file=/data/bitcoin/.cookie \\
   --monitoring-addr=127.0.0.1:4224
 Restart=on-failure
+RestartSec=5
 LimitNOFILE=8192
+NoNewPrivileges=true
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
@@ -64,13 +78,8 @@ ELECTRS_PORT="50001"
 # install tor se manca
 if ! command -v tor >/dev/null 2>&1; then
   case "$pkg_mgr" in
-    apt)
-      apt-get update -y
-      apt-get install -y tor
-      ;;
-    dnf|yum)
-      pkg_install tor
-      ;;
+    apt) apt-get update -y && apt-get install -y tor ;;
+    dnf|yum) pkg_install tor ;;
   esac
 fi
 

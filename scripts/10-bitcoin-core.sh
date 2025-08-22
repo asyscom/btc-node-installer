@@ -98,7 +98,8 @@ bind=127.0.0.1=onion
 # RPC (cookie)
 rpcallowip=127.0.0.1
 rpcport=${BITCOIN_RPC_PORT}
-
+rpcbind=127.0.0.1
+rpcbind=::1
 # ZMQ
 zmqpubrawblock=tcp://127.0.0.1:${ZMQ_RAWBLOCK}
 zmqpubrawtx=tcp://127.0.0.1:${ZMQ_RAWTX}
